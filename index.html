@@ -1,0 +1,3222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KryloCanvas (Web-WhiteBoard) - Advanced Whiteboard</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Fabric.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    
+    <!-- PDF.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    
+    <!-- jsPDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+    <style>
+        /* Strict layout constraints to prevent mobile cutoff while allowing native zoom */
+        body, html {
+            height: 100dvh; width: 100vw; margin: 0; overflow: hidden;
+            background-color: #111827; color: #f3f4f6; font-family: 'Inter', sans-serif;
+        }
+
+        /* Flexible workspace wrapper */
+        .canvas-wrapper {
+            position: relative; background: white; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+            flex-shrink: 0; width: 100%; max-width: 95%; margin-bottom: 2rem;
+            transform-origin: top center; border-radius: 8px; overflow: hidden;
+        }
+
+        .canvas-wrapper.horizontal { aspect-ratio: 4 / 3; }
+        @media (min-width: 768px) { .canvas-wrapper.horizontal { max-width: 1000px; aspect-ratio: 16 / 9; } }
+        .canvas-wrapper.vertical { aspect-ratio: 3 / 4; max-width: 800px; }
+        .canvas-wrapper.landscape { aspect-ratio: 4 / 3; max-width: 1000px; }
+        /* wrapper no longer clips, so the side buttons can sit outside the page */
+        .canvas-wrapper { overflow: visible; }
+        .canvas-wrapper .canvas-container { border-radius: 8px; overflow: hidden; }
+        .canvas-wrapper.page-selected { box-shadow: 0 0 0 2px #c4b5fd, 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
+        #pages-container { padding-right: 60px !important; }
+
+        .canvas-container { width: 100% !important; height: 100% !important; }
+        .upper-canvas, .lower-canvas { width: 100% !important; height: 100% !important; }
+
+        .page-side-btns {
+            position: absolute; top: 8px; left: calc(100% + 8px); width: 44px;
+            display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 10;
+        }
+        .btn-delete-page {
+            background-color: #ef4444; color: white;
+            border-radius: 50%; width: 30px; height: 30px; display: flex; justify-content: center;
+            align-items: center; cursor: pointer; font-weight: bold; flex-shrink: 0;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 2px solid #111827;
+        }
+        .rot-wrap { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+        .btn-rotate-page {
+            background-color: #3b82f6; color: white; border-radius: 50%; width: 30px; height: 30px;
+            display: flex; justify-content: center; align-items: center; cursor: pointer; flex-shrink: 0;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 2px solid #111827;
+        }
+        .btn-rotate-page:hover { background-color: #2563eb; }
+        .btn-rotate-page svg { transition: transform 0.35s ease; }
+        .rot-label { font-size: 7px; line-height: 1.05; color: #9ca3af; text-align: center; font-weight: 700; }
+        .btn-delete-page:hover { background-color: #dc2626; transform: scale(1.1); }
+
+        .tool-btn {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background-color: #1f2937; border: 2px solid transparent; border-radius: 8px; padding: 6px;
+            transition: all 0.2s; cursor: pointer; position: relative; flex: 0 0 auto;
+        }
+        .tool-btn:hover { background-color: #374151; }
+        .tool-btn.active { border-color: #3b82f6; background-color: #1e3a8a; }
+
+        .tool-icon { width: 26px; height: 26px; }
+        .tool-label { font-size: 0.55rem; font-weight: bold; margin-top: 4px; text-transform: uppercase; color: #9ca3af; text-align: center; line-height: 1.1; }
+        .tool-btn.active .tool-label { color: #bfdbfe; }
+
+        .overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 9999;
+        }
+        .overlay.active { display: flex; }
+
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #111827; }
+        ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        
+        .shape-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 10px; max-height: 60vh; overflow-y: auto; padding-right: 5px; }
+        .shape-btn { 
+            background: #374151; padding: 8px; border-radius: 6px; display: flex; flex-direction: column; 
+            justify-content: center; align-items: center; cursor: pointer; border: 2px solid transparent; transition: all 0.2s;
+        }
+        .shape-btn:hover { background: #4b5563; border-color: #a78bfa; }
+        .shape-btn svg { width: 36px; height: 36px; fill: none; stroke: #c4b5fd; stroke-width: 2; margin-bottom: 6px; }
+        .shape-btn span { font-size: 0.65rem; color: #e5e7eb; text-align: center; font-weight: bold; line-height: 1.1; }
+
+        /* ===== Zoom behaviour (addition) =====
+           - Outside menus (top bar + tool bar): normal browser pinch-zoom stays allowed.
+           - Whiteboard area: browser pinch-zoom is blocked; zooming there only works via the Preview tool. */
+        header, aside { touch-action: pan-x pan-y pinch-zoom; }
+        #pages-container { touch-action: pan-x pan-y; }
+        body.preview-mode #pages-container { touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+        body.preview-mode #pages-container .upper-canvas { cursor: grab !important; }
+        body.preview-mode.is-panning #pages-container,
+        body.preview-mode.is-panning #pages-container .upper-canvas { cursor: grabbing !important; }
+
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        #toast-container { position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%); z-index: 10000; pointer-events: none; display: flex; flex-direction: column; gap: 10px; }
+        .toast { background: rgba(0, 0, 0, 0.85); color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 0.875rem; border: 1px solid #374151; box-shadow: 0 4px 6px rgba(0,0,0,0.3); animation: fadeIn 0.3s ease-out; transition: opacity 0.5s; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* Color popup menu (addition) */
+        #color-circle-btn { width: 32px; height: 32px; border-radius: 50%; border: 2px solid #e5e7eb; cursor: pointer; padding: 0; background: #000000; box-shadow: 0 0 0 2px #1f2937; }
+        #color-popup { position: fixed; display: none; z-index: 10001; background: #1f2937; border: 1px solid #4b5563; border-radius: 12px; padding: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 196px; }
+        #color-popup.active { display: block; }
+        .color-swatch-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+        .color-swatch { width: 28px; height: 28px; border-radius: 50%; border: 2px solid #6b7280; cursor: pointer; padding: 0; transition: transform 0.15s; }
+        .color-swatch:hover { transform: scale(1.15); }
+        .color-swatch.selected { border-color: #fff; box-shadow: 0 0 0 2px #3b82f6; }
+        #btn-custom-color { margin-top: 10px; width: 100%; padding: 7px 8px; border-radius: 8px; background: #374151; border: 1px solid #4b5563; color: #e5e7eb; font-size: 0.75rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; }
+        #btn-custom-color:hover { background: #4b5563; }
+        .custom-wheel-dot { width: 14px; height: 14px; border-radius: 50%; background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red); }
+        #color-popup.custom-mode { width: 268px; max-height: calc(100vh - 16px); overflow-y: auto; }
+        .cp-sec { font-size: 0.6rem; text-transform: uppercase; letter-spacing: .06em; color: #9ca3af; font-weight: 800; margin: 10px 0 4px; }
+        #cp-sv { position: relative; width: 100%; height: 130px; border-radius: 8px; cursor: crosshair; touch-action: none; background-image: linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, rgba(255,255,255,0)); background-color: #f00; }
+        #cp-sv-marker { position: absolute; width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1.5px #000; transform: translate(-50%, -50%); pointer-events: none; }
+        .cp-bar { width: 100%; height: 14px; border-radius: 7px; -webkit-appearance: none; appearance: none; outline: none; border: 1px solid #4b5563; }
+        .cp-bar::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 2px solid #111827; box-shadow: 0 0 0 1px #fff; cursor: pointer; }
+        .cp-bar::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 2px solid #111827; cursor: pointer; }
+        #cp-hue-bar { background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+        #cp-gray-bar { background: linear-gradient(to right, #fff, #000); }
+        .cp-recent { display: flex; gap: 6px; flex-wrap: wrap; min-height: 22px; }
+        .cp-recent .color-swatch { width: 22px; height: 22px; }
+        #cp-main-view.hidden, #cp-custom-view.hidden { display: none; }
+        .cp-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 0.7rem; color: #e5e7eb; font-weight: 700; }
+        .cp-row label { width: 14px; }
+        .cp-row input[type=range] { flex: 1; min-width: 0; height: 6px; }
+        .cp-row .cp-val { width: 28px; text-align: right; color: #9ca3af; font-variant-numeric: tabular-nums; }
+        #cp-wheel-wrap { position: relative; width: 200px; height: 200px; margin: 0 auto; touch-action: none; }
+        #cp-wheel { width: 200px; height: 200px; border-radius: 50%; display: block; cursor: crosshair; }
+        #cp-marker { position: absolute; width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1.5px #000; transform: translate(-50%, -50%); pointer-events: none; }
+        #cp-hex { flex: 1; min-width: 0; background: #111827; border: 1px solid #4b5563; color: #f3f4f6; border-radius: 6px; padding: 4px 6px; font-size: 0.75rem; font-family: monospace; }
+        .cp-btn { padding: 6px 8px; border-radius: 8px; background: #374151; border: 1px solid #4b5563; color: #e5e7eb; font-size: 0.72rem; font-weight: 700; cursor: pointer; }
+        .cp-btn:hover { background: #4b5563; }
+        .cp-btn.primary { background: #2563eb; border-color: #3b82f6; }
+        .cp-btn.primary:hover { background: #1d4ed8; }
+        .page-style-btn { transition: all 0.2s; cursor: pointer; }
+        .page-style-btn.active-page-style { border-color: #3b82f6 !important; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5); }
+        #compass-hud {
+            position: fixed; bottom: 104px; left: 50%; transform: translateX(-50%);
+            z-index: 10000; background: rgba(17, 24, 39, 0.95); border: 1.5px solid #0284c7;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.6); border-radius: 12px; padding: 10px 14px;
+            display: none; align-items: center; gap: 10px; max-width: 95vw; flex-wrap: wrap;
+            backdrop-filter: blur(8px);
+        }
+        #compass-hud.active { display: flex; }
+        @media (min-width: 768px) { #compass-hud { bottom: 20px; } }
+        .compass-btn {
+            background: #1f2937; border: 1px solid #4b5563; border-radius: 6px; padding: 4px 8px;
+            font-size: 0.75rem; font-weight: 600; color: #f3f4f6; cursor: pointer; transition: all 0.15s;
+            display: inline-flex; align-items: center; gap: 4px;
+        }
+        .compass-btn:hover { background: #374151; border-color: #38bdf8; color: #38bdf8; }
+        #flowchart-hud {
+            position: fixed; bottom: 104px; left: 50%; transform: translateX(-50%);
+            z-index: 10000; background: rgba(17, 24, 39, 0.95); border: 1.5px solid #10b981;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.6); border-radius: 12px; padding: 10px 14px;
+            display: none; align-items: center; gap: 10px; max-width: 95vw; flex-wrap: wrap;
+            backdrop-filter: blur(8px);
+        }
+        #flowchart-hud.active { display: flex; }
+        @media (min-width: 768px) { #flowchart-hud { bottom: 20px; } }
+        .fc-theme-btn {
+            border: 2px solid transparent; border-radius: 8px; padding: 6px 10px;
+            font-size: 0.75rem; font-weight: 700; cursor: pointer; transition: all 0.2s;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .fc-theme-btn.active-theme { border-color: #10b981; box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.5); }
+        .fc-type-btn {
+            border: 2px solid #374151; border-radius: 8px; padding: 8px 12px;
+            font-size: 0.75rem; font-weight: 700; cursor: pointer; transition: all 0.2s;
+            background: #1f2937; text-align: left;
+        }
+        .fc-type-btn:hover { background: #374151; border-color: #10b981; }
+        .fc-type-btn.active-type { border-color: #10b981; background: #064e3b; color: #34d399; }
+    </style>
+</head>
+<body class="h-[100dvh] w-screen flex flex-col overflow-hidden bg-gray-900 text-gray-100 font-sans">
+
+    <!-- Top Toolbar (Horizontally Scrollable) -->
+    <header class="flex-none h-14 bg-gray-800 border-b border-gray-700 flex items-center px-2 md:px-4 shadow-md z-50 overflow-x-auto whitespace-nowrap gap-4 hide-scrollbar flex-nowrap shrink-0">
+        <div class="flex items-center gap-2 shrink-0">
+            <button id="btn-menu" class="text-2xl text-gray-400 hover:text-white transition p-1 shrink-0" title="Instructions">☰</button>
+            
+            <!-- Read & Access Instruction Guide Button (Deep Blue with White Text) -->
+            <button id="btn-instruction-guide" class="px-3 py-1.5 bg-blue-900 hover:bg-blue-800 text-white font-bold rounded-md text-xs border border-blue-500 shadow transition flex items-center gap-1.5 shrink-0" title="Read and Access the Instruction Guide">
+                <span>📖</span> Read and access the instruction guide
+            </button>
+
+            <!-- KryloCanvas Brand Logo (Shifted to center) -->
+            <div class="flex items-center ml-2 md:ml-4 shrink-0">
+                <!-- Branding Logo -->
+                <svg class="w-8 h-8 mr-1" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="2" y="4" width="20" height="14" rx="1" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/>
+                    <path d="M6 18v4m12-4v4" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
+                    <path d="M15 6l-3 9 1.5.5 3-9-1.5-.5z" fill="#facc15" stroke="#ca8a04" stroke-width="1"/>
+                    <path d="M12 15l-1 2 1.5-.5L12 15z" fill="#475569"/>
+                    <path d="M15 6l1.5.5.5-1.5-1.5-.5-.5 1.5z" fill="#f87171"/>
+                </svg>
+                <h1 class="font-bold text-lg tracking-wider hidden md:block">Krylo<span class="text-blue-500">Canvas</span> <span class="text-sm font-normal opacity-70 whitespace-nowrap">(Web-WhiteBoard)</span></h1>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-2 bg-gray-900 px-2 py-1 rounded-md border border-gray-700 shrink-0 ml-auto md:ml-0">
+            <span class="text-xs font-bold text-gray-400 hidden lg:inline">THEME</span>
+            <button class="theme-btn w-6 h-6 rounded-full bg-white border-2 border-blue-500 active-theme shadow" data-theme="white" title="White Theme"></button>
+            <button class="theme-btn w-6 h-6 rounded-full bg-black border-2 border-gray-500 shadow" data-theme="black" title="Black Theme"></button>
+            <button class="theme-btn w-6 h-6 rounded-full bg-gray-400 border-2 border-gray-500 shadow" data-theme="gray" title="Grey Theme"></button>
+            
+            <div class="w-px h-5 bg-gray-600 mx-1"></div>
+            <span class="text-xs font-bold text-gray-400 hidden lg:inline">PAGE STYLE</span>
+            
+            <!-- Blank Page (Slanting line in circle) -->
+            <button id="btn-page-blank" class="page-style-btn w-6 h-6 rounded-full bg-gray-700 border-2 border-gray-500 flex items-center justify-center shadow hover:border-blue-400 transition" data-style="blank" title="Blank Page Theme (No Grid)">
+                <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" stroke="white" stroke-width="2.5"><line x1="4" y1="20" x2="20" y2="4" stroke-linecap="round"/></svg>
+            </button>
+            
+            <!-- Standard Grid Page -->
+            <button id="btn-page-grid" class="page-style-btn w-6 h-6 rounded-full bg-gray-700 border-2 border-blue-500 active-page-style flex items-center justify-center shadow hover:border-blue-400 transition" data-style="grid" title="Standard Grid Page Theme">
+                <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" stroke="white" stroke-width="1.5"><path d="M4 4h16v16H4zM4 10h16M4 16h16M10 4v16M16 4v16" opacity="0.8"/></svg>
+            </button>
+
+            <!-- Single Lines Page (Ruled Paper) -->
+            <button id="btn-page-lines" class="page-style-btn w-6 h-6 rounded-full bg-gray-700 border-2 border-gray-500 flex items-center justify-center shadow hover:border-blue-400 transition" data-style="lines" title="Single Lines (Ruled Paper) Theme">
+                <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" stroke="white" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+
+            <!-- Dotted Page (Dot Pattern) -->
+            <button id="btn-page-dots" class="page-style-btn w-6 h-6 rounded-full bg-gray-700 border-2 border-gray-500 flex items-center justify-center shadow hover:border-blue-400 transition" data-style="dots" title="Dotted Grid Page Theme">
+                <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="white">
+                    <circle cx="5" cy="5" r="1.5"/><circle cx="12" cy="5" r="1.5"/><circle cx="19" cy="5" r="1.5"/>
+                    <circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>
+                    <circle cx="5" cy="19" r="1.5"/><circle cx="12" cy="19" r="1.5"/><circle cx="19" cy="19" r="1.5"/>
+                </svg>
+            </button>
+
+            <div class="w-px h-5 bg-gray-600 mx-1"></div>
+
+            <!-- Millimeter Graph Button (Click opens 5 colors popup) -->
+            <button id="btn-graph-page" class="w-6 h-6 rounded-full bg-green-900 border-2 border-green-500 flex items-center justify-center shadow hover:scale-105 transition" title="Add Millimeter Graph Page (5 Colors)">
+                <svg viewBox="0 0 24 24" class="w-4 h-4" stroke="white" stroke-width="1.5"><path d="M3 3v18h18M7 3v18M11 3v18M15 3v18M19 3v18M3 7h18M3 11h18M3 15h18M3 19h18" opacity="0.6"/></svg>
+            </button>
+        </div>
+
+        <div class="flex items-center gap-2 shrink-0">
+            <button id="btn-import-pdf" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-xs font-medium border border-gray-600 transition flex items-center gap-1 shrink-0" onclick="document.getElementById('import-pdf').click()">
+                📥 Import PDF
+            </button>
+            <button id="btn-import-img" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-xs font-medium border border-gray-600 transition flex items-center gap-1 shrink-0" onclick="document.getElementById('import-img').click()">
+                🖼️ Import Image
+            </button>
+            <button id="btn-export-pdf" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-xs font-medium border border-gray-600 transition flex items-center gap-1 shrink-0" onclick="exportPDF()">
+                📤 Export PDF
+            </button>
+            
+            <div class="w-px h-5 bg-gray-600 mx-1"></div>
+            
+            <button id="btn-undo" class="p-1.5 bg-gray-800 hover:bg-gray-700 rounded text-sm border border-gray-600 transition shrink-0" title="Undo">↩️</button>
+            <button id="btn-redo" class="p-1.5 bg-gray-800 hover:bg-gray-700 rounded text-sm border border-gray-600 transition shrink-0" title="Redo">↪️</button>
+            
+            <div class="w-px h-5 bg-gray-600 mx-1"></div>
+
+            <button id="btn-refresh" class="p-1.5 bg-yellow-900/50 hover:bg-yellow-800 text-yellow-300 rounded text-sm font-bold border border-yellow-800 transition shrink-0" title="Refresh">🔄</button>
+            <button id="btn-close" class="p-1.5 bg-red-900/50 hover:bg-red-800 text-red-300 rounded text-sm font-bold border border-red-800 transition shrink-0" title="Close">✖</button>
+        </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
+        
+        <!-- Pages Container -->
+        <div id="pages-container" class="flex-1 overflow-auto relative bg-gray-900 flex flex-col items-center p-4">
+            <button id="btn-add-page" class="w-full max-w-xs py-3 border-2 border-dashed border-gray-500 text-gray-400 hover:border-blue-500 hover:text-blue-500 font-bold rounded-lg transition mb-8 uppercase tracking-widest text-sm flex items-center justify-center gap-2 shrink-0 mt-4 mx-auto">
+                ➕ Add Page
+            </button>
+        </div>
+
+        <!-- Tool & Shapes Toolbar (Horizontally/Vertically Scrollable) -->
+        <aside class="w-full md:w-24 h-24 md:h-full flex-none bg-gray-800 border-t md:border-t-0 md:border-l border-gray-700 flex md:flex-col gap-2 p-2 overflow-x-auto md:overflow-y-auto z-40 items-center hide-scrollbar flex-nowrap shrink-0">
+            
+            <button class="tool-btn active w-16 md:w-full shrink-0" data-tool="select" title="Select, Move & Manage Objects">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/></svg>
+                <span class="tool-label">Select</span>
+            </button>
+
+            <button class="tool-btn w-16 md:w-full shrink-0" data-tool="preview" title="Preview: pinch to zoom in/out & drag to move around the whiteboard pages">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
+                <span class="tool-label">Preview</span>
+            </button>
+
+            <button class="tool-btn w-16 md:w-full shrink-0" data-tool="selectpage" title="Select Page: tap a page to make it the active page">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 14a8 8 0 0 1-8 8"/><path d="M18 11v-1a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V9a2 2 0 0 0-2-2a2 2 0 0 0-2 2v1"/><path d="M10 9.5V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v10"/><path d="M18 11a2 2 0 1 1 4 0v3a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
+                <span class="tool-label">Select<br>Page</span>
+            </button>
+
+            <div class="flex flex-col items-center justify-center w-16 md:w-full shrink-0 gap-1">
+                <div class="relative w-8 h-8 shrink-0">
+                    <button id="color-circle-btn" title="Stroke Color"></button>
+                    <input type="color" id="color-picker" value="#000000" tabindex="-1" style="position:absolute;left:0;top:0;width:32px;height:32px;opacity:0;pointer-events:none;border:0;padding:0;" title="Stroke Color">
+                </div>
+                <span class="tool-label">Selected<br>Color</span>
+            </div>
+            
+            <div class="w-px h-full md:w-full md:h-px bg-gray-700 mx-1 my-0 md:my-1 shrink-0"></div>
+
+            <button class="tool-btn w-16 md:w-full shrink-0" data-tool="pen">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none"><path d="M12 2L2 12l2 2 10-10-2-2zM4 14l2 2M22 22l-6-6-4 4 6 6 4-4z" stroke="#3b82f6" stroke-width="2" stroke-linejoin="round"/></svg>
+                <span class="tool-label">Pen</span>
+            </button>
+            <button class="tool-btn w-16 md:w-full shrink-0" data-tool="pencil">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none"><path d="M18 2l4 4-14 14H4v-4L18 2z" fill="#facc15" stroke="#ca8a04" stroke-width="1"/><path d="M4 18l4 4-2 2H2v-4l2-2z" fill="#475569"/></svg>
+                <span class="tool-label">Pencil</span>
+            </button>
+            <button class="tool-btn w-16 md:w-full shrink-0" data-tool="highlighter">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none"><path d="M16 4l4 4-8 8-4-4 8-8z" fill="#86efac" stroke="#22c55e" stroke-width="2"/><path d="M8 16l4 4-6 2-2-6z" fill="#bbf7d0"/></svg>
+                <span class="tool-label">Highlight</span>
+            </button>
+            <button class="tool-btn w-16 md:w-full shrink-0" data-tool="text" title="Text: tap on a page to type plain text">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="#f9a8d4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg>
+                <span class="tool-label">Text</span>
+            </button>
+            
+            <div class="w-px h-full md:w-full md:h-px bg-gray-700 mx-1 my-0 md:my-1 shrink-0"></div>
+            
+            <button class="tool-btn w-16 md:w-full shrink-0" data-tool="eraser-section" title="Drag box to select & delete">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke="#f43f5e" stroke-width="2" stroke-dasharray="4 4"/></svg>
+                <span class="tool-label">Section<br>Eraser</span>
+            </button>
+            <button class="tool-btn w-16 md:w-full shrink-0" data-tool="eraser-pixel" title="Scribble over lines to erase">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none"><path d="M4 16l6-6 4 4 6-6" stroke="#fbbf24" stroke-width="3" stroke-linecap="round"/><path d="M6 20h12" stroke="#9ca3af" stroke-width="2" stroke-linecap="round"/></svg>
+                <span class="tool-label">Pixel<br>Eraser</span>
+            </button>
+
+            <div class="w-px h-full md:w-full md:h-px bg-gray-700 mx-1 my-0 md:my-1 shrink-0"></div>
+
+            <button class="tool-btn w-16 md:w-full shrink-0" id="btn-shapes" title="Insert Shapes">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2"><circle cx="7" cy="7" r="4"/><rect x="13" y="13" width="8" height="8"/><path d="M17 3l4 8H13z"/></svg>
+                <span class="tool-label text-purple-300">Shapes</span>
+            </button>
+            <button class="tool-btn w-16 md:w-full shrink-0" id="btn-rulers" title="Rulers & Instruments">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" stroke-width="2"><path d="M21 21L3 21M3 21L21 3M3 21V15M7 17V19M11 13V15M15 9V11M19 5V7"/></svg>
+                <span class="tool-label text-teal-300">Rulers</span>
+            </button>
+            <button class="tool-btn w-16 md:w-full shrink-0" id="btn-compass" title="Compass & Arc Tool">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="4" r="2" fill="#38bdf8"/><path d="M12 6L6 21M12 6L18 21" stroke="#38bdf8" stroke-width="2.5"/><line x1="5.5" y1="21" x2="4.5" y2="23" stroke="#ef4444" stroke-width="2"/><circle cx="18" cy="21" r="1.5" fill="#facc15" stroke="#ca8a04"/><path d="M8.5 14.5a6 6 0 0 0 7 0" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="2 2"/></svg>
+                <span class="tool-label text-sky-300">Compass</span>
+            </button>
+            <button class="tool-btn w-16 md:w-full shrink-0" id="btn-flowchart" title="Flowcharts & Process Trees">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="6" rx="1.5"/><rect x="14" y="3" width="7" height="6" rx="1.5"/><rect x="8.5" y="15" width="7" height="6" rx="1.5"/><path d="M6.5 9v3h11V9M12 12v3"/></svg>
+                <span class="tool-label text-emerald-300">Flowchart</span>
+            </button>
+            
+            <div class="w-px h-full md:w-full md:h-px bg-gray-700 mx-1 my-0 md:my-1 shrink-0"></div>
+
+            <button class="tool-btn w-16 md:w-full shrink-0" id="btn-clear-all" title="Clear All Drawings">
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                <span class="tool-label text-red-400">Clear All</span>
+            </button>
+
+            <div class="w-px h-full md:w-full md:h-px bg-gray-700 mx-1 my-0 md:my-1 shrink-0"></div>
+
+            <div class="flex flex-col items-center justify-center min-w-[60px] w-full px-1 gap-1 shrink-0 pb-2">
+                <input type="range" id="size-slider" min="1" max="40" value="3" class="w-full md:w-[70px] accent-blue-500" title="Thickness">
+                <div class="text-[10px] text-gray-400 text-center uppercase leading-tight mt-1 font-semibold">universal<br>thickness</div>
+            </div>
+        </aside>
+    </main>
+
+    <div id="toast-container"></div>
+
+    <!-- Color popup menu -->
+    <div id="color-popup">
+        <div id="cp-main-view">
+            <div class="color-swatch-grid" id="color-swatch-grid"></div>
+            <button id="btn-custom-color"><span class="custom-wheel-dot"></span>Custom Color</button>
+        </div>
+        <div id="cp-custom-view" class="hidden">
+            <div class="cp-sec" style="margin-top:0">Default colors</div>
+            <div class="color-swatch-grid" id="cp-default-grid"></div>
+            <div class="cp-sec">Color wheel (hue + saturation)</div>
+            <div id="cp-wheel-wrap"><canvas id="cp-wheel" width="400" height="400"></canvas><div id="cp-marker"></div></div>
+            <div class="cp-sec">Shade box (white &harr; color &harr; black)</div>
+            <div id="cp-sv"><div id="cp-sv-marker"></div></div>
+            <div class="cp-sec">Hue spectrum</div>
+            <input type="range" class="cp-bar" id="cp-hue-bar" min="0" max="360" value="0">
+            <div class="cp-sec">White &rarr; Black</div>
+            <input type="range" class="cp-bar" id="cp-gray-bar" min="0" max="255" value="0">
+            <div class="cp-sec">Sliders</div>
+            <div class="cp-row"><label style="color:#e5e7eb">H</label><input type="range" id="cp-h" min="0" max="360"><span class="cp-val" id="cp-h-val">0</span></div>
+            <div class="cp-row"><label style="color:#e5e7eb">S</label><input type="range" id="cp-s" min="0" max="100"><span class="cp-val" id="cp-s-val">0</span></div>
+            <div class="cp-row"><label style="color:#e5e7eb">V</label><input type="range" id="cp-v" min="0" max="100"><span class="cp-val" id="cp-v-val">100</span></div>
+            <div class="cp-row"><label style="color:#f87171">R</label><input type="range" id="cp-r" min="0" max="255"><span class="cp-val" id="cp-r-val">0</span></div>
+            <div class="cp-row"><label style="color:#4ade80">G</label><input type="range" id="cp-g" min="0" max="255"><span class="cp-val" id="cp-g-val">0</span></div>
+            <div class="cp-row"><label style="color:#60a5fa">B</label><input type="range" id="cp-b" min="0" max="255"><span class="cp-val" id="cp-b-val">0</span></div>
+            <div class="cp-sec">Hex code</div>
+            <div class="cp-row" style="margin-top:0"><span id="cp-preview" style="width:28px;height:28px;border-radius:50%;border:2px solid #6b7280;flex-shrink:0;"></span><input type="text" id="cp-hex" maxlength="7" spellcheck="false" value="#000000"><button class="cp-btn" id="cp-eye" title="Pick color from screen" style="display:none">Eyedropper</button></div>
+            <div class="cp-sec">Recent colors</div>
+            <div class="cp-recent" id="cp-recent"></div>
+            <div class="cp-row" style="margin-top:10px;"><button class="cp-btn" id="cp-back" style="flex:1">&larr; Back</button><button class="cp-btn primary" id="cp-apply" style="flex:1">Apply</button></div>
+        </div>
+    </div>
+    
+    <!-- Hidden Inputs for File Import -->
+    <input type="file" id="import-pdf" accept="application/pdf" class="hidden">
+    <input type="file" id="import-img" accept="image/png, image/jpeg, image/jpg" class="hidden">
+
+    <!-- Modals -->
+    <!-- Instruction Guide & QR Code Modal -->
+    <div id="modal-instruction-guide" class="overlay">
+        <div class="bg-gray-800 border border-gray-600 rounded-xl shadow-2xl max-w-md w-full m-4 overflow-hidden flex flex-col">
+            <!-- Modal Header with KryloCanvas Logo -->
+            <div class="bg-gray-900 p-4 border-b border-gray-700 flex justify-between items-center">
+                <div class="flex items-center gap-2.5">
+                    <svg class="w-8 h-8 shrink-0" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="2" y="4" width="20" height="14" rx="1" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/>
+                        <path d="M6 18v4m12-4v4" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M15 6l-3 9 1.5.5 3-9-1.5-.5z" fill="#facc15" stroke="#ca8a04" stroke-width="1"/>
+                        <path d="M12 15l-1 2 1.5-.5L12 15z" fill="#475569"/>
+                        <path d="M15 6l1.5.5.5-1.5-1.5-.5-.5 1.5z" fill="#f87171"/>
+                    </svg>
+                    <div>
+                        <h2 class="text-base font-bold text-white tracking-wide leading-tight">
+                            Krylo<span class="text-blue-500">Canvas</span> <span class="text-xs font-normal text-gray-400">(Web-WhiteBoard)</span>
+                        </h2>
+                        <p class="text-[11px] text-blue-400 font-medium leading-none mt-0.5">Official Instruction Guide</p>
+                    </div>
+                </div>
+                <button class="close-modal text-gray-400 hover:text-white text-xl p-1">✖</button>
+            </div>
+
+            <!-- Modal Body -->
+            <div class="p-5 space-y-4 max-h-[75vh] overflow-y-auto text-center">
+                <p class="text-xs text-gray-300 leading-relaxed">
+                    Scan this QR code with your smartphone, tablet, or interactive flat panel camera to view the complete instruction guide, or click the direct link below:
+                </p>
+
+                <!-- High-Resolution Scannable QR Code -->
+                <div class="w-56 h-56 mx-auto bg-white p-3 rounded-xl border-2 border-blue-500 shadow-lg flex items-center justify-center">
+                    <img 
+                        src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=https%3A%2F%2Fkrylocanvas.vercel.app%2FKryloCanvas-Instruction-Guide.pdf" 
+                        alt="KryloCanvas Instruction Guide QR Code"
+                        class="w-full h-full object-contain block"
+                        loading="eager"
+                    />
+                </div>
+
+                <!-- Direct Clickable Link Box in Blue -->
+                <div class="bg-gray-900 border border-blue-500/40 rounded-lg p-3 text-left">
+                    <span class="text-xs font-bold text-blue-400 block mb-1">Document URL:</span>
+                    <a 
+                        href="https://krylocanvas.vercel.app/KryloCanvas-Instruction-Guide.pdf" 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        class="text-xs md:text-sm text-blue-400 hover:text-blue-300 font-mono font-bold break-all underline flex items-center gap-1.5"
+                    >
+                        <span>🔗</span> https://krylocanvas.vercel.app/KryloCanvas-Instruction-Guide.pdf
+                    </a>
+                </div>
+
+                <!-- Open / Download Button -->
+                <a 
+                    href="https://krylocanvas.vercel.app/KryloCanvas-Instruction-Guide.pdf" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    class="w-full py-2.5 bg-blue-700 hover:bg-blue-600 text-white font-bold rounded-lg shadow-lg transition text-xs tracking-wider uppercase flex items-center justify-center gap-2"
+                >
+                    <span>📥</span> Open / Download Instruction Guide (PDF)
+                </a>
+
+                <div class="bg-gray-900/60 p-2.5 rounded-lg border border-gray-700/80 text-center">
+                    <p class="text-xs font-bold text-gray-200">Software Architecture: Abhimat Chatterjee</p>
+                    <p class="text-[10px] text-gray-400 font-semibold mt-0.5">&copy; Copyright 2026 Abhimat Chatterjee. All rights reserved.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-menu" class="overlay">
+        <div class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl max-w-md w-full m-4 overflow-hidden flex flex-col">
+            <div class="bg-gray-900 p-4 border-b border-gray-700 flex justify-between items-center">
+                <h2 class="text-lg font-bold text-white tracking-wide">ℹ️ Instructions</h2>
+                <button class="close-modal text-gray-400 hover:text-white text-xl">✖</button>
+            </div>
+            <div class="p-5 space-y-3 text-sm text-gray-300 leading-relaxed max-h-[60vh] overflow-y-auto">
+                <p>Welcome to <b>KryloCanvas (Web-WhiteBoard)</b>.</p>
+                <ul class="list-disc pl-5 space-y-2">
+                    <li><b>Universal Engine:</b> Your color and thickness settings dynamically update the Pen, Pencil, Highlighter, and inserted Shapes in real-time.</li>
+                    <li><b>Select Tool:</b> Unlock and select, move, scale, rotate, and delete drawings, shapes, and imported images.</li>
+                    <li><b>Solid Rulers & Snapping:</b> Instruments act as mathematically solid boundaries. Trace edges with the pen/pencil to create perfectly straight or curved snapped lines that won't bleed through.</li>
+                    <li><b>Precision Compass:</b> Fix the needle center, extend arm infinitely to scale (in cm, mm, and inches), and draw exact mathematical arcs & circles with live scale readout and stylus snapping.</li>
+                    <li><b>Page Styles & Themes:</b> Switch between Blank (no grid), Standard Grid, Single Lines (Ruled), Dotted, and 5 Millimeter Graph colors (Green, Blue, Red, Orange, B&W) with automatic color inversion.</li>
+                    <li><b>Flowcharts & Trees:</b> Insert horizontal process flows, vertical hierarchy trees, or custom branching diagrams. Customize colors and themes per block, double-click or use the in-page editor to write text, and add/remove subordinate leaf nodes via interactive HUD controls or pull/push handles.</li>
+                    <li><b>Custom Controls:</b> Select an instrument or image to reveal the red 'Delete' icon (top right) and blue 'Rotate' arrows (top center).</li>
+                    <li><b>Text Tool:</b> Pick Text, tap anywhere on a page and type plain text. Tap existing text to edit it; use Select to move or resize it.</li>
+                    <li><b>Preview Tool (hand):</b> Pinch in/out (or Ctrl + scroll on desktop) to zoom the whiteboard pages, and drag to move around. Pinching on the top/side menus zooms the menus only.</li>
+                    <li><b>Image/PDF Import:</b> Native integration for importing images to the canvas and multi-page PDF generation.</li>
+                </ul>
+                <div class="mt-6 bg-gray-900 p-3 rounded text-center border border-gray-700">
+                    <p class="font-bold text-gray-100">Creator: Abhimat Chatterjee</p>
+                    <p class="text-xs text-red-400 font-bold uppercase mt-1">&copy; Copyright 2026 Abhimat Chatterjee. All rights reserved. No one is to copy this.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Compass Instruction Modal -->
+    <div id="modal-compass-instructions" class="overlay">
+        <div class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl max-w-md w-full m-4 overflow-hidden flex flex-col">
+            <div class="bg-gray-900 p-4 border-b border-gray-700 flex justify-between items-center">
+                <h2 class="text-lg font-bold text-sky-400 tracking-wide flex items-center gap-2">
+                    <span>🧭</span> Precision Compass Instructions
+                </h2>
+                <button id="btn-close-compass-instructions" class="text-gray-400 hover:text-white text-xl" title="Close and Use Compass">✖</button>
+            </div>
+            <div class="p-5 space-y-3.5 text-sm text-gray-300 leading-relaxed max-h-[60vh] overflow-y-auto">
+                <p class="text-gray-100 text-xs">Draw mathematically exact arcs and circles to scale without error, matching the whiteboard ruler:</p>
+                
+                <div class="flex items-start gap-3 bg-gray-900/60 p-2.5 rounded-lg border border-gray-700">
+                    <span class="text-lg">📍</span>
+                    <div>
+                        <b class="text-sky-300 text-xs uppercase tracking-wider">1. Fixed Needle (Pivot)</b>
+                        <p class="text-xs text-gray-400 mt-0.5">The red crosshair marks the needle center. Drag the compass with Select tool to place the pivot anywhere on any page.</p>
+                    </div>
+                </div>
+
+                <div class="flex items-start gap-3 bg-gray-900/60 p-2.5 rounded-lg border border-gray-700">
+                    <span class="text-lg">📏</span>
+                    <div>
+                        <b class="text-sky-300 text-xs uppercase tracking-wider">2. Extend Arm Infinitely</b>
+                        <p class="text-xs text-gray-400 mt-0.5">Adjust the radius in cm, mm, or inches via the slider or type an exact measurement. The arm can be infinitely extended across any page without limits.</p>
+                    </div>
+                </div>
+
+                <div class="flex items-start gap-3 bg-gray-900/60 p-2.5 rounded-lg border border-gray-700">
+                    <span class="text-lg">⭕</span>
+                    <div>
+                        <b class="text-sky-300 text-xs uppercase tracking-wider">3. Draw Arc & Circle</b>
+                        <p class="text-xs text-gray-400 mt-0.5">Click <b>"Circle"</b> for a full 360° circle or <b>"Arc"</b> for an exact arc, rendered with your universal color and thickness.</p>
+                    </div>
+                </div>
+
+                <div class="flex items-start gap-3 bg-gray-900/60 p-2.5 rounded-lg border border-gray-700">
+                    <span class="text-lg">🧲</span>
+                    <div>
+                        <b class="text-sky-300 text-xs uppercase tracking-wider">4. Mathematical Snapping</b>
+                        <p class="text-xs text-gray-400 mt-0.5">Drawing near the compass with Pen, Pencil, or Highlighter automatically snaps onto the exact circumference!</p>
+                    </div>
+                </div>
+
+                <button id="btn-start-compass" class="w-full mt-2 py-2 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-lg transition text-xs tracking-wider uppercase">
+                    Got It — Use Compass
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Millimeter Graph Color Choice Modal -->
+    <div id="modal-graph-colors" class="overlay">
+        <div class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl max-w-md w-full m-4 overflow-hidden flex flex-col">
+            <div class="bg-gray-900 p-4 border-b border-gray-700 flex justify-between items-center">
+                <h2 class="text-lg font-bold text-green-400 tracking-wide flex items-center gap-2">
+                    <span>📐</span> Select Millimeter Graph Paper
+                </h2>
+                <button class="close-modal text-gray-400 hover:text-white text-xl">✖</button>
+            </div>
+            <div class="p-4 space-y-2.5 max-h-[60vh] overflow-y-auto">
+                <p class="text-xs text-gray-300">Choose a millimeter graph paper color to add a new page:</p>
+                <div class="grid grid-cols-1 gap-2 pt-1">
+                    <button class="btn-graph-choice flex items-center gap-3 p-2.5 rounded-lg border border-green-600 bg-green-950/40 hover:bg-green-900/60 transition text-left" data-color="green">
+                        <div class="w-8 h-8 rounded border border-green-500 bg-green-900 flex items-center justify-center shrink-0">
+                            <svg viewBox="0 0 24 24" class="w-5 h-5" stroke="#4ade80" stroke-width="1.5"><path d="M3 3v18h18M7 3v18M11 3v18M15 3v18M19 3v18M3 7h18M3 11h18M3 15h18M3 19h18" opacity="0.8"/></svg>
+                        </div>
+                        <div>
+                            <div class="font-bold text-xs text-green-300">Green Millimeter Graph</div>
+                            <div class="text-[10px] text-gray-400">Classic green engineering graph grid</div>
+                        </div>
+                    </button>
+                    
+                    <button class="btn-graph-choice flex items-center gap-3 p-2.5 rounded-lg border border-blue-600 bg-blue-950/40 hover:bg-blue-900/60 transition text-left" data-color="blue">
+                        <div class="w-8 h-8 rounded border border-blue-500 bg-blue-900 flex items-center justify-center shrink-0">
+                            <svg viewBox="0 0 24 24" class="w-5 h-5" stroke="#60a5fa" stroke-width="1.5"><path d="M3 3v18h18M7 3v18M11 3v18M15 3v18M19 3v18M3 7h18M3 11h18M3 15h18M3 19h18" opacity="0.8"/></svg>
+                        </div>
+                        <div>
+                            <div class="font-bold text-xs text-blue-300">Blue Millimeter Graph</div>
+                            <div class="text-[10px] text-gray-400">Blueprint technical grid</div>
+                        </div>
+                    </button>
+
+                    <button class="btn-graph-choice flex items-center gap-3 p-2.5 rounded-lg border border-rose-600 bg-rose-950/40 hover:bg-rose-900/60 transition text-left" data-color="red">
+                        <div class="w-8 h-8 rounded border border-rose-500 bg-rose-900 flex items-center justify-center shrink-0">
+                            <svg viewBox="0 0 24 24" class="w-5 h-5" stroke="#fb7185" stroke-width="1.5"><path d="M3 3v18h18M7 3v18M11 3v18M15 3v18M19 3v18M3 7h18M3 11h18M3 15h18M3 19h18" opacity="0.8"/></svg>
+                        </div>
+                        <div>
+                            <div class="font-bold text-xs text-rose-300">Red / Maroon Graph</div>
+                            <div class="text-[10px] text-gray-400">Reddish-pink scientific graph grid</div>
+                        </div>
+                    </button>
+
+                    <button class="btn-graph-choice flex items-center gap-3 p-2.5 rounded-lg border border-orange-600 bg-orange-950/40 hover:bg-orange-900/60 transition text-left" data-color="orange">
+                        <div class="w-8 h-8 rounded border border-orange-500 bg-orange-900 flex items-center justify-center shrink-0">
+                            <svg viewBox="0 0 24 24" class="w-5 h-5" stroke="#fb923c" stroke-width="1.5"><path d="M3 3v18h18M7 3v18M11 3v18M15 3v18M19 3v18M3 7h18M3 11h18M3 15h18M3 19h18" opacity="0.8"/></svg>
+                        </div>
+                        <div>
+                            <div class="font-bold text-xs text-orange-300">Orange Millimeter Graph</div>
+                            <div class="text-[10px] text-gray-400">Warm orange precision graph grid</div>
+                        </div>
+                    </button>
+
+                    <button class="btn-graph-choice flex items-center gap-3 p-2.5 rounded-lg border border-gray-500 bg-gray-900 hover:bg-gray-800 transition text-left" data-color="bw">
+                        <div class="w-8 h-8 rounded border border-gray-400 bg-gray-800 flex items-center justify-center shrink-0">
+                            <svg viewBox="0 0 24 24" class="w-5 h-5" stroke="#e5e7eb" stroke-width="1.5"><path d="M3 3v18h18M7 3v18M11 3v18M15 3v18M19 3v18M3 7h18M3 11h18M3 15h18M3 19h18" opacity="0.8"/></svg>
+                        </div>
+                        <div>
+                            <div class="font-bold text-xs text-gray-200">Black & White Graph</div>
+                            <div class="text-[10px] text-gray-400">Monochrome high-contrast graph grid</div>
+                        </div>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Compass Precision Controls HUD -->
+    <div id="compass-hud">
+        <div class="flex items-center gap-2 pr-2 border-r border-gray-700">
+            <span class="text-sky-400 font-bold">🧭 Compass:</span>
+            <span id="hud-compass-info" class="text-sky-300 font-mono font-bold">5.0 cm (50 mm)</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+            <button id="btn-compass-dec-r" class="compass-btn" title="Decrease Radius 0.5cm">−0.5cm</button>
+            <input type="range" id="compass-radius-slider" min="1" max="40" step="0.1" value="5.0" class="w-20 md:w-28 accent-sky-500" title="Adjust Radius">
+            <button id="btn-compass-inc-r" class="compass-btn" title="Increase Radius 0.5cm">+0.5cm</button>
+            <input type="number" id="compass-radius-num" min="0.5" max="500" step="0.1" value="5.0" class="w-14 bg-gray-800 border border-gray-600 rounded px-1 py-0.5 text-center text-sky-300 text-xs font-bold" title="Exact Radius (cm)">
+            <span class="text-[11px] text-gray-400">cm</span>
+        </div>
+        <div class="flex items-center gap-1.5 pl-2 border-l border-gray-700">
+            <button id="btn-compass-rot-ccw" class="compass-btn" title="Rotate Arm 15° Counter-Clockwise">⟲ 15°</button>
+            <button id="btn-compass-rot-cw" class="compass-btn" title="Rotate Arm 15° Clockwise">⟳ 15°</button>
+            <button id="btn-compass-draw-circle" class="compass-btn bg-sky-900/60 border-sky-500 text-sky-200 hover:bg-sky-800" title="Draw 360° Circle">⭕ Circle</button>
+            <button id="btn-compass-draw-arc" class="compass-btn bg-teal-900/60 border-teal-500 text-teal-200 hover:bg-teal-800" title="Draw Arc">📐 Arc (90°)</button>
+            <button id="btn-compass-close" class="compass-btn text-red-400 hover:bg-red-950 hover:border-red-500" title="Close Compass">✖</button>
+        </div>
+    </div>
+
+    <!-- Flowchart Builder Modal -->
+    <div id="modal-flowchart" class="overlay">
+        <div class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl max-w-lg w-full m-4 overflow-hidden flex flex-col">
+            <div class="bg-gray-900 p-4 border-b border-gray-700 flex justify-between items-center">
+                <h2 class="text-lg font-bold text-emerald-400 tracking-wide flex items-center gap-2">
+                    <span>📊</span> Flowchart & Process Tree Builder
+                </h2>
+                <button class="close-modal text-gray-400 hover:text-white text-xl">✖</button>
+            </div>
+            <div class="p-5 space-y-4 max-h-[70vh] overflow-y-auto text-sm text-gray-300">
+                <!-- Layout Direction -->
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2">1. Flowchart Direction</label>
+                    <div class="grid grid-cols-2 gap-3">
+                        <button id="fc-dir-h" class="fc-type-btn active-type flex items-center justify-center gap-2">
+                            <span>↔</span> Horizontal Flow (L ➔ R)
+                        </button>
+                        <button id="fc-dir-v" class="fc-type-btn flex items-center justify-center gap-2">
+                            <span>↕</span> Vertical Tree (Top ➔ Down)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Template Type -->
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2">2. Flowchart Structure</label>
+                    <div class="grid grid-cols-3 gap-2">
+                        <button id="fc-type-process" class="fc-type-btn active-type text-center py-2 px-1">
+                            <div class="text-base mb-1">🔄</div>
+                            <div class="text-xs font-bold">Process Flow</div>
+                            <div class="text-[10px] text-gray-400">Sequential steps</div>
+                        </button>
+                        <button id="fc-type-tree" class="fc-type-btn text-center py-2 px-1">
+                            <div class="text-base mb-1">🌳</div>
+                            <div class="text-xs font-bold">Tree Hierarchy</div>
+                            <div class="text-[10px] text-gray-400">Root & Leaves</div>
+                        </button>
+                        <button id="fc-type-single" class="fc-type-btn text-center py-2 px-1">
+                            <div class="text-base mb-1">🔲</div>
+                            <div class="text-xs font-bold">Single Node</div>
+                            <div class="text-[10px] text-gray-400">Extend manually</div>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Columns / Steps Stepper -->
+                <div id="fc-steps-row">
+                    <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2">3. Steps / Columns Count</label>
+                    <div class="flex items-center gap-3 bg-gray-900 p-2 rounded-lg border border-gray-700">
+                        <button id="fc-step-dec" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-white font-bold">− 1</button>
+                        <span id="fc-step-val" class="font-bold text-emerald-400 text-sm flex-1 text-center font-mono">3 Steps</span>
+                        <button id="fc-step-inc" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-white font-bold">+ 1</button>
+                    </div>
+                </div>
+
+                <!-- Color & Theme -->
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2">4. Block Theme & Color</label>
+                    <div class="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                        <button class="fc-theme-btn active-theme bg-blue-950/60 text-blue-300 border-blue-500" data-theme="blue">
+                            <span class="w-3 h-3 rounded-full bg-blue-500 shrink-0"></span> Blue
+                        </button>
+                        <button class="fc-theme-btn bg-emerald-950/60 text-emerald-300 border-emerald-600" data-theme="green">
+                            <span class="w-3 h-3 rounded-full bg-emerald-500 shrink-0"></span> Green
+                        </button>
+                        <button class="fc-theme-btn bg-purple-950/60 text-purple-300 border-purple-600" data-theme="purple">
+                            <span class="w-3 h-3 rounded-full bg-purple-500 shrink-0"></span> Purple
+                        </button>
+                        <button class="fc-theme-btn bg-orange-950/60 text-orange-300 border-orange-600" data-theme="orange">
+                            <span class="w-3 h-3 rounded-full bg-orange-500 shrink-0"></span> Orange
+                        </button>
+                        <button class="fc-theme-btn bg-gray-800 text-gray-200 border-gray-500" data-theme="slate">
+                            <span class="w-3 h-3 rounded-full bg-gray-400 shrink-0"></span> Slate
+                        </button>
+                        <button class="fc-theme-btn bg-gray-800 text-yellow-300 border-yellow-500" data-theme="universal">
+                            <span class="w-3 h-3 rounded-full bg-yellow-400 shrink-0"></span> Custom
+                        </button>
+                    </div>
+                </div>
+
+                <button id="btn-insert-flowchart" class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg shadow-lg transition text-xs uppercase tracking-wider flex items-center justify-center gap-2">
+                    <span>🚀</span> Insert Flowchart on Page
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Flowchart Interactive Controls HUD -->
+    <div id="flowchart-hud">
+        <div class="flex items-center gap-2 pr-2 border-r border-gray-700">
+            <span class="text-emerald-400 font-bold">📊 Flowchart:</span>
+            <span id="hud-flowchart-info" class="text-emerald-300 font-mono text-xs font-bold">Ready</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+            <button id="btn-fc-add-node" class="compass-btn bg-emerald-900/60 border-emerald-500 text-emerald-200 hover:bg-emerald-800" title="Add Connected Next Node">➕ Add Step</button>
+            <button id="btn-fc-add-branch" class="compass-btn bg-teal-900/60 border-teal-500 text-teal-200 hover:bg-teal-800" title="Add Subordinate / Leaf Node">🌿 Leaf Node</button>
+            <button id="btn-fc-edit-text" class="compass-btn bg-blue-900/60 border-blue-500 text-blue-200 hover:bg-blue-800" title="Edit Block Text">🔤 Text</button>
+            <button id="btn-fc-del-node" class="compass-btn text-red-300 hover:bg-red-950 hover:border-red-500" title="Delete Selected Block">🗑 Delete</button>
+        </div>
+        <div class="flex items-center gap-1.5 pl-2 border-l border-gray-700">
+            <button id="btn-fc-toggle-dir" class="compass-btn" title="Toggle Direction (Horizontal / Vertical)">↔ / ↕ Dir</button>
+            <div class="flex items-center gap-1" title="Color Theme">
+                <button class="fc-quick-color w-4 h-4 rounded-full bg-blue-500 hover:scale-110 transition" data-theme="blue"></button>
+                <button class="fc-quick-color w-4 h-4 rounded-full bg-emerald-500 hover:scale-110 transition" data-theme="green"></button>
+                <button class="fc-quick-color w-4 h-4 rounded-full bg-purple-500 hover:scale-110 transition" data-theme="purple"></button>
+                <button class="fc-quick-color w-4 h-4 rounded-full bg-orange-500 hover:scale-110 transition" data-theme="orange"></button>
+                <button class="fc-quick-color w-4 h-4 rounded-full bg-gray-400 hover:scale-110 transition" data-theme="slate"></button>
+            </div>
+            <button id="btn-fc-close" class="compass-btn text-gray-400 hover:text-white" title="Close Flowchart Toolbar">✖</button>
+        </div>
+    </div>
+    <!-- In-Page Flowchart Text Edit Modal -->
+    <div id="modal-fc-text" class="overlay">
+        <div class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl max-w-sm w-full m-4 overflow-hidden">
+            <div class="bg-gray-900 p-4 border-b border-gray-700 flex justify-between items-center">
+                <h2 class="text-sm font-bold text-emerald-400 flex items-center gap-2"><span>🔤</span> Edit Flowchart Block Text</h2>
+                <button class="close-modal text-gray-400 hover:text-white text-lg">✖</button>
+            </div>
+            <div class="p-4 space-y-3">
+                <label class="block text-xs text-gray-400">Block Label / Writing:</label>
+                <input type="text" id="fc-node-text-input" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none" placeholder="Enter block label">
+                <div class="flex justify-end gap-2 pt-1">
+                    <button class="close-modal px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-bold text-gray-300">Cancel</button>
+                    <button id="btn-fc-save-text" class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded text-xs font-bold text-white">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="modal-shapes" class="overlay">
+        <div class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl max-w-2xl w-full m-4">
+            <div class="p-4 border-b border-gray-700 flex justify-between items-center">
+                <h2 class="text-lg font-bold text-purple-400">Insert Shape</h2>
+                <button class="close-modal text-gray-400 hover:text-white text-xl">✖</button>
+            </div>
+            <div class="p-4 shape-grid" id="shapes-grid-container"></div>
+        </div>
+    </div>
+
+    <div id="modal-rulers" class="overlay">
+        <div class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl max-w-sm w-full m-4">
+            <div class="p-4 border-b border-gray-700 flex justify-between items-center">
+                <h2 class="text-lg font-bold text-teal-400">Rulers & Instruments</h2>
+                <button class="close-modal text-gray-400 hover:text-white text-xl">✖</button>
+            </div>
+            <div class="p-4 flex flex-col gap-3">
+                <button class="bg-gray-700 hover:bg-gray-600 text-white py-2 rounded border border-gray-600 flex items-center justify-center gap-2" onclick="spawnInstrument('ruler')">📏 Solid Ruler (Extensible)</button>
+                <button class="bg-gray-700 hover:bg-gray-600 text-white py-2 rounded border border-gray-600 flex items-center justify-center gap-2" onclick="spawnInstrument('protractor')">📐 Solid 180° Protractor</button>
+                <button class="bg-gray-700 hover:bg-gray-600 text-white py-2 rounded border border-gray-600 flex items-center justify-center gap-2" onclick="spawnInstrument('setsquare')">📐 Solid Set Square</button>
+                <button class="bg-gray-700 hover:bg-gray-600 text-white py-2 rounded border border-gray-600 flex items-center justify-center gap-2" onclick="spawnCompass()">🧭 Precision Compass (Arc & Circle)</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-clear-all" class="overlay">
+        <div class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl max-w-sm w-full m-4">
+            <div class="p-5"><h2 class="text-xl font-bold text-red-400 mb-2">🗑️ Clear All Drawings</h2><p class="text-sm text-gray-300">Are you sure you want to clear all drawings/shapes from all pages?</p></div>
+            <div class="p-4 bg-gray-900 border-t border-gray-700 flex justify-end gap-3">
+                <button class="close-modal px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm font-bold transition">Cancel</button>
+                <button id="btn-confirm-clear" class="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm font-bold transition text-white">Clear All</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- NEW Refresh Modal -->
+    <div id="modal-refresh" class="overlay">
+        <div class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl max-w-sm w-full m-4">
+            <div class="p-5"><h2 class="text-xl font-bold text-yellow-400 mb-2">🔄 Refresh Workspace</h2><p class="text-sm text-gray-300">All unsaved data will be lost. Are you sure you want to refresh?</p></div>
+            <div class="p-4 bg-gray-900 border-t border-gray-700 flex justify-end gap-3">
+                <button class="close-modal px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm font-bold transition">Cancel</button>
+                <button onclick="location.reload()" class="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 rounded text-sm font-bold transition text-white">Refresh</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- NEW Close Modal -->
+    <div id="modal-close" class="overlay">
+        <div class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl max-w-sm w-full m-4">
+            <div class="p-5"><h2 class="text-xl font-bold text-red-400 mb-2">✖ Close Workspace</h2><p class="text-sm text-gray-300">Confirm you have saved the document. Close without saving?</p></div>
+            <div class="p-4 bg-gray-900 border-t border-gray-700 flex justify-end gap-3">
+                <button class="close-modal px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm font-bold transition">Cancel</button>
+                <button onclick="location.reload()" class="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm font-bold transition text-white">Yes</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-loading" class="overlay z-[10000] flex-col">
+        <div class="w-12 h-12 border-4 border-blue-900 border-t-blue-500 rounded-full animate-spin mb-4"></div>
+        <p id="loading-text" class="text-white font-bold tracking-widest text-sm uppercase">Processing...</p>
+    </div>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+        const PX_PER_CM = 37.795;
+        const PX_PER_INCH = 96;
+        let isMobile = window.innerWidth < 768;
+        const HORIZONTAL_W = isMobile ? 1200 : 1600; const HORIZONTAL_H = isMobile ? 1600 : 1200; 
+        const GRAPH_W = 1200; const GRAPH_H = 1600;
+        
+        let appState = { 
+            theme: 'white', 
+            pageStyle: 'grid',
+            tool: 'select', 
+            universalColor: '#000000', 
+            universalThickness: 3, 
+            canvases: [], 
+            activeCanvas: null 
+        };
+        let pageCounter = 0;
+
+        // --- Utility: Convert Hex to RGB for Highlighter ---
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : {r: 0, g: 0, b: 0};
+        }
+
+        // --- Custom Fabric Controls Setup (Delete & Rotate) ---
+        const deleteIcon = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23ef4444'%3E%3Cpath d='M19 4h-3.5l-1-1h-5l-1 1H5v2h14M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12z'/%3E%3C/svg%3E";
+        const rotateIcon = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233b82f6' stroke-width='3'%3E%3Cpath d='M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2'/%3E%3C/svg%3E";
+        
+        const delImg = document.createElement('img'); delImg.src = deleteIcon;
+        const rotImg = document.createElement('img'); rotImg.src = rotateIcon;
+
+        function renderIcon(icon) {
+            return function(ctx, left, top, styleOverride, fabricObject) {
+                const size = this.cornerSize;
+                ctx.save(); ctx.translate(left, top);
+                ctx.drawImage(icon, -size/2, -size/2, size, size);
+                ctx.restore();
+            }
+        }
+
+        function deleteObjectHandler(eventData, transform) {
+            const target = transform.target; const canvas = target.canvas;
+            canvas.remove(target);
+            canvas.requestRenderAll();
+            updateHistory(canvas);
+            return true;
+        }
+
+        fabric.Object.prototype.transparentCorners = false;
+        fabric.Object.prototype.cornerColor = 'white';
+        fabric.Object.prototype.cornerStrokeColor = '#3b82f6';
+        fabric.Object.prototype.borderColor = '#3b82f6';
+        fabric.Object.prototype.cornerSize = 16;
+        fabric.Object.prototype.padding = 5;
+
+        fabric.Object.prototype.controls.deleteControl = new fabric.Control({
+            x: 0.5, y: -0.5, offsetY: -16, offsetX: 16, cursorStyle: 'pointer',
+            mouseUpHandler: deleteObjectHandler, render: renderIcon(delImg), cornerSize: 26
+        });
+
+        fabric.Object.prototype.controls.mtr.render = renderIcon(rotImg);
+        fabric.Object.prototype.controls.mtr.cornerSize = 28;
+        fabric.Object.prototype.controls.mtr.offsetY = -35;
+
+        // --- Shapes Definition (25 Shapes) ---
+        const shapesList = [
+            {name: 'Equilateral', svg: '<polygon points="50,10 90,90 10,90"/>', draw: () => new fabric.Triangle({width:100, height:86.6})},
+            {name: 'Isosceles', svg: '<polygon points="50,10 80,90 20,90"/>', draw: () => new fabric.Polygon([{x:50,y:0},{x:20,y:100},{x:80,y:100}])},
+            {name: 'Scalene', svg: '<polygon points="30,10 90,90 10,80"/>', draw: () => new fabric.Polygon([{x:30,y:0},{x:100,y:100},{x:0,y:80}])},
+            {name: 'Right Tri', svg: '<polygon points="10,10 10,90 90,90"/>', draw: () => new fabric.Polygon([{x:0,y:0},{x:0,y:100},{x:100,y:100}])},
+            {name: 'Square', svg: '<rect x="20" y="20" width="60" height="60"/>', draw: () => new fabric.Rect({width:100, height:100})},
+            {name: 'Rectangle', svg: '<rect x="10" y="30" width="80" height="40"/>', draw: () => new fabric.Rect({width:150, height:80})},
+            {name: 'Parallelogram', svg: '<polygon points="30,20 90,20 70,80 10,80"/>', draw: () => new fabric.Polygon([{x:30,y:0},{x:130,y:0},{x:100,y:80},{x:0,y:80}])},
+            {name: 'Rhombus', svg: '<polygon points="50,10 90,50 50,90 10,50"/>', draw: () => new fabric.Polygon([{x:50,y:0},{x:100,y:50},{x:50,y:100},{x:0,y:50}])},
+            {name: 'Trapezium', svg: '<polygon points="30,20 70,20 90,80 10,80"/>', draw: () => new fabric.Polygon([{x:20,y:0},{x:80,y:0},{x:100,y:80},{x:0,y:80}])},
+            {name: 'Kite', svg: '<polygon points="50,10 90,40 50,90 10,40"/>', draw: () => new fabric.Polygon([{x:50,y:0},{x:100,y:40},{x:50,y:120},{x:0,y:40}])},
+            {name: 'Pentagon', svg: '<polygon points="50,10 90,40 75,90 25,90 10,40"/>', draw: () => new fabric.Polygon([{x:50,y:0},{x:100,y:38},{x:81,y:100},{x:19,y:100},{x:0,y:38}])},
+            {name: 'Hexagon', svg: '<polygon points="30,15 70,15 90,50 70,85 30,85 10,50"/>', draw: () => new fabric.Polygon([{x:25,y:0},{x:75,y:0},{x:100,y:43},{x:75,y:86},{x:25,y:86},{x:0,y:43}])},
+            {name: 'Heptagon', svg: '<polygon points="50,10 85,25 95,65 70,95 30,95 5,65 15,25"/>', draw: () => new fabric.Polygon([{x:50,y:0},{x:90,y:19},{x:100,y:62},{x:72,y:100},{x:28,y:100},{x:0,y:62},{x:10,y:19}])},
+            {name: 'Octagon', svg: '<polygon points="30,10 70,10 95,35 95,75 70,95 30,95 10,75 10,35"/>', draw: () => new fabric.Polygon([{x:30,y:0},{x:70,y:0},{x:100,y:30},{x:100,y:70},{x:70,y:100},{x:30,y:100},{x:0,y:70},{x:0,y:30}])},
+            {name: 'Circle', svg: '<circle cx="50" cy="50" r="40"/>', draw: () => new fabric.Circle({radius:50})},
+            {name: 'Semicircle', svg: '<path d="M 10 50 A 40 40 0 0 1 90 50 Z"/>', draw: () => new fabric.Path('M 0 50 A 50 50 0 0 1 100 50 Z')},
+            {name: 'Oval', svg: '<ellipse cx="50" cy="50" rx="40" ry="25"/>', draw: () => new fabric.Ellipse({rx:80, ry:40})},
+            {name: 'Star', svg: '<polygon points="50,10 61,35 98,35 68,57 79,91 50,70 21,91 32,57 2,35 39,35"/>', draw: () => new fabric.Polygon([{x:50,y:0},{x:61,y:35},{x:98,y:35},{x:68,y:57},{x:79,y:91},{x:50,y:70},{x:21,y:91},{x:32,y:57},{x:2,y:35},{x:39,y:35}])},
+            {name: 'Cross', svg: '<polygon points="40,10 60,10 60,40 90,40 90,60 60,60 60,90 40,90 40,60 10,60 10,40 40,40"/>', draw: () => new fabric.Polygon([{x:40,y:0},{x:60,y:0},{x:60,y:40},{x:100,y:40},{x:100,y:60},{x:60,y:60},{x:60,y:100},{x:40,y:100},{x:40,y:60},{x:0,y:60},{x:0,y:40},{x:40,y:40}])},
+            {name: 'Arrow R', svg: '<polygon points="10,35 60,35 60,15 95,50 60,85 60,65 10,65"/>', draw: () => new fabric.Polygon([{x:0,y:25},{x:50,y:25},{x:50,y:0},{x:100,y:50},{x:50,y:100},{x:50,y:75},{x:0,y:75}])},
+            {name: 'Arrow U', svg: '<polygon points="35,90 35,40 15,40 50,5 85,40 65,40 65,90"/>', draw: () => new fabric.Polygon([{x:25,y:100},{x:25,y:50},{x:0,y:50},{x:50,y:0},{x:100,y:50},{x:75,y:50},{x:75,y:100}])},
+            {name: 'Heart', svg: '<path d="M 50 90 C 10 60 10 20 30 10 C 45 5 50 20 50 20 C 50 20 55 5 70 10 C 90 20 90 60 50 90 Z"/>', draw: () => new fabric.Path('M 50 90 C 10 60 10 20 30 10 C 45 5 50 20 50 20 C 50 20 55 5 70 10 C 90 20 90 60 50 90 Z')},
+            {name: 'Moon', svg: '<path d="M 50 10 A 40 40 0 1 0 90 50 A 30 30 0 1 1 50 10 Z"/>', draw: () => new fabric.Path('M 50 10 A 40 40 0 1 0 90 50 A 30 30 0 1 1 50 10 Z')},
+            {name: 'Cloud', svg: '<path d="M 30 80 Q 10 80 10 60 Q 10 40 30 40 Q 40 20 60 20 Q 80 20 80 40 Q 95 40 95 60 Q 95 80 70 80 Z"/>', draw: () => new fabric.Path('M 30 80 Q 10 80 10 60 Q 10 40 30 40 Q 40 20 60 20 Q 80 20 80 40 Q 95 40 95 60 Q 95 80 70 80 Z')},
+            {name: 'Wedge', svg: '<path d="M 50 50 L 90 50 A 40 40 0 0 0 50 10 Z"/>', draw: () => new fabric.Path('M 50 50 L 90 50 A 40 40 0 0 0 50 10 Z')},
+            {name: 'Straight Line', svg: '<line x1="15" y1="50" x2="85" y2="50" stroke-width="5" stroke="currentColor"/>', draw: () => new fabric.Line([0, 50, 160, 50], {strokeWidth: 3})},
+            {name: 'Curved Line', svg: '<path d="M 15 70 Q 50 15 85 70" fill="none" stroke-width="5" stroke="currentColor"/>', draw: () => new fabric.Path('M 0 60 Q 80 0 160 60', {fill: 'transparent'})},
+            {name: 'S-Curve', svg: '<path d="M 15 75 Q 35 25 50 50 T 85 25" fill="none" stroke-width="5" stroke="currentColor"/>', draw: () => new fabric.Path('M 0 75 Q 40 10 80 50 T 160 25', {fill: 'transparent'})},
+            {name: 'Arrow L', svg: '<polygon points="85,35 40,35 40,15 15,50 40,85 40,65 85,65"/>', draw: () => new fabric.Polygon([{x:100,y:25},{x:50,y:25},{x:50,y:0},{x:0,y:50},{x:50,y:100},{x:50,y:75},{x:100,y:75}])},
+            {name: 'Arrow D', svg: '<polygon points="35,15 35,60 15,60 50,85 85,60 65,60 65,15"/>', draw: () => new fabric.Polygon([{x:25,y:0},{x:25,y:50},{x:0,y:50},{x:50,y:100},{x:100,y:50},{x:75,y:50},{x:75,y:0}])},
+            {name: 'Double Arrow H', svg: '<polygon points="15,50 35,25 35,40 65,40 65,25 85,50 65,75 65,60 35,60 35,75"/>', draw: () => new fabric.Polygon([{x:0,y:50},{x:35,y:15},{x:35,y:35},{x:115,y:35},{x:115,y:15},{x:150,y:50},{x:115,y:85},{x:115,y:65},{x:35,y:65},{x:35,y:85}])},
+            {name: 'Double Arrow V', svg: '<polygon points="50,15 25,35 40,35 40,65 25,65 50,85 75,65 60,65 60,35 75,35"/>', draw: () => new fabric.Polygon([{x:50,y:0},{x:15,y:35},{x:35,y:35},{x:35,y:115},{x:15,y:115},{x:50,y:150},{x:85,y:115},{x:65,y:115},{x:65,y:35},{x:85,y:35}])},
+            {name: 'Curved Arrow R', svg: '<path d="M 20 75 A 40 40 0 0 1 75 30" fill="none" stroke-width="5"/><polygon points="70,18 90,32 70,45"/>', draw: () => new fabric.Path('M 10 90 A 60 60 0 0 1 90 20 L 85 5 L 115 25 L 85 45 L 90 30 A 70 70 0 0 0 10 100 Z')},
+            {name: 'Curved Arrow L', svg: '<path d="M 80 75 A 40 40 0 0 0 25 30" fill="none" stroke-width="5"/><polygon points="30,18 10,32 30,45"/>', draw: () => new fabric.Path('M 115 90 A 60 60 0 0 0 35 20 L 40 5 L 10 25 L 40 45 L 35 30 A 70 70 0 0 1 115 100 Z')},
+            {name: 'Return Arrow', svg: '<path d="M 30 75 V 45 A 25 25 0 0 1 80 45 V 75" fill="none" stroke-width="5"/><polygon points="70,70 80,90 90,70"/>', draw: () => new fabric.Path('M 25 100 L 25 50 A 35 35 0 0 1 95 50 L 95 90 L 80 85 L 95 115 L 110 85 L 105 90 L 105 50 A 45 45 0 0 0 15 50 L 15 100 Z')},
+            {name: 'Rounded Rect', svg: '<rect x="15" y="30" width="70" height="40" rx="12"/>', draw: () => new fabric.Rect({width:150, height:80, rx:16, ry:16})},
+            {name: 'Rounded Square', svg: '<rect x="20" y="20" width="60" height="60" rx="14"/>', draw: () => new fabric.Rect({width:100, height:100, rx:18, ry:18})},
+            {name: 'Squircle', svg: '<rect x="18" y="18" width="64" height="64" rx="26"/>', draw: () => new fabric.Rect({width:100, height:100, rx:34, ry:34})},
+            {name: 'Diamond', svg: '<polygon points="50,15 85,50 50,85 15,50"/>', draw: () => new fabric.Polygon([{x:60,y:0},{x:120,y:60},{x:60,y:120},{x:0,y:60}])},
+            {name: 'Cylinder', svg: '<ellipse cx="50" cy="25" rx="35" ry="12"/><path d="M 15 25 v 50 a 35 12 0 0 0 70 0 v -50"/>', draw: () => new fabric.Path('M 0 15 A 50 15 0 0 1 100 15 A 50 15 0 0 1 0 15 M 0 15 L 0 75 A 50 15 0 0 0 100 75 L 100 15')},
+            {name: 'Document', svg: '<path d="M 20 20 h 60 v 55 q -15 -10 -30 0 t -30 0 z"/>', draw: () => new fabric.Path('M 0 0 L 120 0 L 120 80 Q 90 65 60 80 T 0 80 Z')},
+            {name: 'Data / IO', svg: '<polygon points="25,25 90,25 75,75 10,75"/>', draw: () => new fabric.Polygon([{x:25,y:0},{x:125,y:0},{x:100,y:70},{x:0,y:70}])},
+            {name: 'Callout', svg: '<path d="M 15 25 h 70 a 8 8 0 0 1 8 8 v 25 a 8 8 0 0 1 -8 8 h -40 l -15 15 v -15 h -15 a 8 8 0 0 1 -8 -8 v -25 a 8 8 0 0 1 8 -8 z"/>', draw: () => new fabric.Path('M 15 0 L 105 0 Q 120 0 120 15 L 120 65 Q 120 80 105 80 L 60 80 L 35 105 L 35 80 L 15 80 Q 0 80 0 65 L 0 15 Q 0 0 15 0 Z')}
+        ];
+
+        function showToast(msg) {
+            const c = document.getElementById('toast-container');
+            const t = document.createElement('div'); t.className = 'toast'; t.innerText = msg;
+            c.appendChild(t);
+            setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 500); }, 3500);
+        }
+
+        // --- Dynamic SOLID SVG Instruments ---
+        function generateRulerSVG(widthPx) {
+            const padding = 20; const w = widthPx || (30 * PX_PER_CM + padding * 2); const h = 120;
+            const maxCm = Math.floor((w - padding*2) / PX_PER_CM); const maxInch = Math.floor((w - padding*2) / PX_PER_INCH);
+
+            let svg = `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">`;
+            svg += `<rect width="${w}" height="${h}" fill="rgba(255,255,255,0.7)" stroke="#000" stroke-width="2"/>`; 
+            svg += `<text x="5" y="15" font-family="Arial" font-size="10" font-weight="bold" fill="#000">CM/MM</text>`;
+            svg += `<text x="5" y="${h-5}" font-family="Arial" font-size="10" font-weight="bold" fill="#000">INCHES</text>`;
+            
+            for (let i = 0; i <= maxCm; i++) {
+                let x = padding + i * PX_PER_CM;
+                svg += `<line x1="${x}" y1="0" x2="${x}" y2="30" stroke="#000" stroke-width="2"/>`;
+                svg += `<text x="${x}" y="45" font-family="Arial" font-size="14" text-anchor="middle" fill="#000">${i}</text>`;
+                if (i < maxCm) {
+                    for(let j = 1; j < 10; j++) {
+                        let mmX = x + j * (PX_PER_CM/10); let tickH = j === 5 ? 20 : 10;
+                        svg += `<line x1="${mmX}" y1="0" x2="${mmX}" y2="${tickH}" stroke="#000" stroke-width="1"/>`;
+                    }
+                }
+            }
+            for (let i = 0; i <= maxInch; i++) {
+                let x = padding + i * PX_PER_INCH;
+                svg += `<line x1="${x}" y1="${h}" x2="${x}" y2="${h-30}" stroke="#000" stroke-width="2"/>`;
+                svg += `<text x="${x}" y="${h-35}" font-family="Arial" font-size="16" text-anchor="middle" fill="#000">${i}</text>`;
+                if (i < maxInch) {
+                    for(let j = 1; j < 16; j++) {
+                        let inX = x + j * (PX_PER_INCH/16); let tickH = (j%8===0) ? 25 : (j%4===0) ? 20 : (j%2===0) ? 15 : 10;
+                        svg += `<line x1="${inX}" y1="${h}" x2="${inX}" y2="${h-tickH}" stroke="#000" stroke-width="1"/>`;
+                    }
+                }
+            }
+            svg += `</svg>`;
+            return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }
+
+        function generateProtractorSVG() {
+            const r = 250; const cx = 270; const cy = 270;
+            let svg = `<svg width="540" height="300" xmlns="http://www.w3.org/2000/svg">`;
+            svg += `<path d="M 20 ${cy} A ${r} ${r} 0 0 1 520 ${cy} Z" fill="rgba(219,234,254,0.7)" stroke="#000" stroke-width="2"/>`; 
+            svg += `<line x1="20" y1="${cy}" x2="520" y2="${cy}" stroke="#000" stroke-width="2"/>`;
+            svg += `<circle cx="${cx}" cy="${cy}" r="5" fill="#000"/>`; 
+            svg += `<line x1="${cx}" y1="${cy}" x2="${cx}" y2="20" stroke="#000" stroke-width="1" stroke-dasharray="4 4"/>`; 
+
+            for(let deg = 0; deg <= 180; deg++) {
+                let rad = (180 - deg) * Math.PI / 180; let tickL = (deg%10===0) ? 20 : (deg%5===0) ? 12 : 6;
+                let x1 = cx + r * Math.cos(rad); let y1 = cy - r * Math.sin(rad);
+                let x2 = cx + (r - tickL) * Math.cos(rad); let y2 = cy - (r - tickL) * Math.sin(rad);
+                svg += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#000" stroke-width="${deg%10===0?2:1}"/>`;
+                if(deg%10===0) {
+                    let txOut = cx + (r - 35) * Math.cos(rad); let tyOut = cy - (r - 35) * Math.sin(rad);
+                    svg += `<text x="${txOut}" y="${tyOut+5}" font-family="Arial" font-size="12" text-anchor="middle" fill="#000">${deg}</text>`;
+                    let txIn = cx + (r - 55) * Math.cos(rad); let tyIn = cy - (r - 55) * Math.sin(rad);
+                    svg += `<text x="${txIn}" y="${tyIn+5}" font-family="Arial" font-size="12" text-anchor="middle" fill="#000">${180-deg}</text>`;
+                }
+            }
+            svg += `</svg>`;
+            return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }
+
+        
+        function generateCompassSVG(r_px, color = '#000000') {
+            const pad = 55;
+            r_px = Math.max(30, r_px);
+            const w = Math.round(r_px + pad * 2);
+            const leg_h = Math.max(160, Math.min(550, r_px * 0.85));
+            const h = Math.round(leg_h + pad * 2);
+            
+            const cx = pad;
+            const cy = h - pad;
+            const px = cx + r_px;
+            const py = cy;
+            const hx = cx + r_px / 2.0;
+            const hy = cy - leg_h;
+            
+            const r_cm = (r_px / PX_PER_CM);
+            const r_mm = r_cm * 10;
+            
+            let svg = `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="compSteel" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#f8fafc" />
+                  <stop offset="40%" stop-color="#94a3b8" />
+                  <stop offset="100%" stop-color="#475569" />
+                </linearGradient>
+                <linearGradient id="compBrass" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#fef08a" />
+                  <stop offset="50%" stop-color="#eab308" />
+                  <stop offset="100%" stop-color="#854d0e" />
+                </linearGradient>
+                <linearGradient id="compPencil" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stop-color="#fde047" />
+                  <stop offset="50%" stop-color="#eab308" />
+                  <stop offset="100%" stop-color="#ca8a04" />
+                </linearGradient>
+              </defs>
+              
+              <!-- Circumference Arc Guide -->
+              <path d="M ${cx} ${cy} A ${r_px} ${r_px} 0 0 1 ${px} ${py}" stroke="rgba(56, 189, 248, 0.45)" stroke-width="2" stroke-dasharray="4 4" fill="none"/>
+              <line x1="${cx}" y1="${cy}" x2="${px}" y2="${py}" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="3 3"/>
+              
+              <!-- Scale Badge -->
+              <g transform="translate(${(cx+px)/2}, ${cy - 20})">
+                <rect x="-75" y="-12" width="150" height="24" rx="12" fill="rgba(15, 23, 42, 0.9)" stroke="#38bdf8" stroke-width="1.5"/>
+                <text x="0" y="4" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#38bdf8" text-anchor="middle">R = ${r_cm.toFixed(2)} cm (${r_mm.toFixed(0)} mm)</text>
+              </g>
+              
+              <!-- Mechanical Brace -->
+              <path d="M ${cx + (hx-cx)*0.6} ${cy - (cy-hy)*0.6} Q ${hx} ${hy + (cy-hy)*0.3} ${hx + (px-hx)*0.4} ${cy - (cy-hy)*0.6}" stroke="url(#compSteel)" stroke-width="6" stroke-linecap="round" fill="none"/>
+              <circle cx="${hx}" cy="${hy + (cy-hy)*0.3}" r="5" fill="url(#compBrass)" stroke="#000" stroke-width="1"/>
+              
+              <!-- Left Needle Leg -->
+              <line x1="${hx}" y1="${hy}" x2="${cx}" y2="${cy - 20}" stroke="url(#compSteel)" stroke-width="9" stroke-linecap="round"/>
+              <line x1="${hx}" y1="${hy}" x2="${cx}" y2="${cy - 20}" stroke="#1e293b" stroke-width="1.5"/>
+              <polygon points="${cx-3},${cy-20} ${cx+3},${cy-20} ${cx},${cy}" fill="#f8fafc" stroke="#64748b" stroke-width="1"/>
+              
+              <!-- Right Pencil Leg -->
+              <line x1="${hx}" y1="${hy}" x2="${px}" y2="${cy - 45}" stroke="url(#compSteel)" stroke-width="9" stroke-linecap="round"/>
+              <rect x="${px - 7}" y="${cy - 48}" width="14" height="16" rx="2" fill="url(#compBrass)" stroke="#000" stroke-width="1"/>
+              <circle cx="${px + 7}" cy="${cy - 40}" r="3" fill="url(#compSteel)" stroke="#000" stroke-width="0.5"/>
+              <rect x="${px - 4}" y="${cy - 42}" width="8" height="28" rx="1" fill="url(#compPencil)" stroke="#a16207" stroke-width="1"/>
+              <polygon points="${px - 4},${cy - 14} ${px + 4},${cy - 14} ${px},${cy}" fill="#fed7aa" stroke="#a16207" stroke-width="1"/>
+              <polygon points="${px - 1.5},${cy - 5} ${px + 1.5},${cy - 5} ${px},${cy}" fill="${color}"/>
+              
+              <!-- Top Hinge Knob -->
+              <rect x="${hx - 4}" y="${hy - 26}" width="8" height="20" rx="2" fill="url(#compSteel)" stroke="#334155" stroke-width="1"/>
+              <line x1="${hx - 4}" y1="${hy - 20}" x2="${hx + 4}" y2="${hy - 20}" stroke="#334155" stroke-width="1"/>
+              <line x1="${hx - 4}" y1="${hy - 14}" x2="${hx + 4}" y2="${hy - 14}" stroke="#334155" stroke-width="1"/>
+              <circle cx="${hx}" cy="${hy}" r="11" fill="url(#compBrass)" stroke="#000" stroke-width="1.5"/>
+              <circle cx="${hx}" cy="${hy}" r="5" fill="url(#compSteel)" stroke="#334155" stroke-width="1"/>
+              
+              <!-- Center Needle Crosshairs -->
+              <circle cx="${cx}" cy="${cy}" r="10" fill="rgba(239, 68, 68, 0.25)" stroke="#ef4444" stroke-width="2"/>
+              <line x1="${cx - 16}" y1="${cy}" x2="${cx + 16}" y2="${cy}" stroke="#ef4444" stroke-width="2"/>
+              <line x1="${cx}" y1="${cy - 16}" x2="${cx}" y2="${cy + 16}" stroke="#ef4444" stroke-width="2"/>
+              <circle cx="${cx}" cy="${cy}" r="2.5" fill="#ef4444"/>
+              <text x="${cx}" y="${cy + 25}" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#ef4444" text-anchor="middle">NEEDLE (CENTER)</text>
+              
+              <!-- Pencil Tip Ring -->
+              <circle cx="${px}" cy="${cy}" r="8" fill="none" stroke="#0ea5e9" stroke-width="2" stroke-dasharray="2 2"/>
+              <text x="${px}" y="${cy + 25}" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#0ea5e9" text-anchor="middle">PENCIL TIP</text>
+            </svg>`;
+            return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }
+
+        function generateSetSquareSVG() {
+            const s = 300; const pad = 20;
+            let svg = `<svg width="${s+pad*2}" height="${s+pad*2}" xmlns="http://www.w3.org/2000/svg">`;
+            svg += `<polygon points="${pad},${pad} ${pad},${s+pad} ${s+pad},${s+pad}" fill="rgba(254,240,138,0.7)" stroke="#000" stroke-width="2"/>`; 
+            svg += `<polygon points="${pad+30},${pad+70} ${pad+30},${s+pad-30} ${s+pad-70},${s+pad-30}" fill="rgba(255,255,255,0.7)" stroke="#000" stroke-width="2"/>`; 
+            
+            for(let i=0; i<= (s/PX_PER_CM); i++) {
+                let x = pad + i * PX_PER_CM;
+                svg += `<line x1="${x}" y1="${s+pad}" x2="${x}" y2="${s+pad-15}" stroke="#000" stroke-width="2"/>`;
+                svg += `<text x="${x}" y="${s+pad-20}" font-family="Arial" font-size="12" text-anchor="middle" fill="#000">${i}</text>`;
+            }
+            for(let i=0; i<= (s/PX_PER_CM); i++) {
+                let y = s+pad - i * PX_PER_CM;
+                svg += `<line x1="${pad}" y1="${y}" x2="${pad+15}" y2="${y}" stroke="#000" stroke-width="2"/>`;
+                if(i>0) svg += `<text x="${pad+20}" y="${y+4}" font-family="Arial" font-size="12" text-anchor="start" fill="#000">${i}</text>`;
+            }
+            svg += `</svg>`;
+            return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }
+
+        // --- Core Initialization ---
+        window.onload = () => {
+            setupUI();
+            setupShapesGrid();
+            addPage('standard');
+            overrideFabricSnapping();
+        };
+
+        function setupUI() {
+            document.getElementById('btn-menu').onclick = () => document.getElementById('modal-menu').classList.add('active');
+            
+            // Open Instruction Guide & QR Code Modal
+            document.getElementById('btn-instruction-guide').onclick = () => {
+                document.getElementById('modal-instruction-guide').classList.add('active');
+            };
+            
+            document.getElementById('btn-undo').onclick = () => undo();
+            document.getElementById('btn-redo').onclick = () => redo();
+            
+            // Re-wired Clear All, Refresh, Close modals
+            document.getElementById('btn-clear-all').onclick = () => document.getElementById('modal-clear-all').classList.add('active');
+            document.getElementById('btn-confirm-clear').onclick = () => { document.getElementById('modal-clear-all').classList.remove('active'); clearAllCanvases(); };
+
+            document.getElementById('btn-refresh').onclick = () => document.getElementById('modal-refresh').classList.add('active');
+            document.getElementById('btn-close').onclick = () => document.getElementById('modal-close').classList.add('active');
+
+            document.getElementById('btn-shapes').onclick = () => document.getElementById('modal-shapes').classList.add('active');
+            document.getElementById('btn-rulers').onclick = () => document.getElementById('modal-rulers').classList.add('active');
+
+            document.querySelectorAll('.close-modal').forEach(btn => btn.onclick = () => document.querySelectorAll('.overlay').forEach(m => m.classList.remove('active')));
+
+            document.querySelectorAll('.theme-btn').forEach(btn => {
+                btn.onclick = (e) => {
+                    document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('border-blue-500', 'active-theme'));
+                    e.target.classList.add('border-blue-500', 'active-theme');
+                    setTheme(e.target.dataset.theme);
+                };
+            });
+
+            document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
+                btn.onclick = (e) => {
+                    document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                    e.currentTarget.classList.add('active');
+                    appState.tool = e.currentTarget.dataset.tool;
+                    applyToolToAll();
+                };
+            });
+
+            // UNIVERSAL COLOR & THICKNESS LISTENERS
+            document.getElementById('color-picker').onchange = (e) => { 
+                appState.universalColor = e.target.value; 
+                applyToolToAll(); 
+            };
+            // COLOR MENU (addition only: feeds the same #color-picker -> existing onchange logic)
+            (function setupColorMenu() {
+                const input = document.getElementById('color-picker');
+                const circle = document.getElementById('color-circle-btn');
+                const popup = document.getElementById('color-popup');
+                const grid = document.getElementById('color-swatch-grid');
+                const customBtn = document.getElementById('btn-custom-color');
+                const presets = ['#000000', '#ffffff', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'];
+
+                const refresh = () => {
+                    circle.style.background = input.value;
+                    grid.querySelectorAll('.color-swatch').forEach(b => b.classList.toggle('selected', b.dataset.color === input.value.toLowerCase()));
+                };
+                const commit = (hex) => {
+                    input.value = hex;
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    refresh();
+                };
+                presets.forEach(c => {
+                    const b = document.createElement('button');
+                    b.className = 'color-swatch'; b.dataset.color = c; b.style.background = c; b.title = c;
+                    b.onclick = () => { commit(c); popup.classList.remove('active'); };
+                    grid.appendChild(b);
+                });
+                const place = () => {
+                    const r = circle.getBoundingClientRect();
+                    const pw = popup.offsetWidth, ph = popup.offsetHeight;
+                    let left, top;
+                    if (window.innerWidth >= 768) { left = r.right + 12; top = r.top - ph / 2; }
+                    else { left = r.left + r.width / 2 - pw / 2; top = r.bottom + 12; }
+                    left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+                    top = Math.max(8, Math.min(top, window.innerHeight - ph - 8));
+                    popup.style.left = left + 'px'; popup.style.top = top + 'px';
+                };
+                circle.onclick = (e) => {
+                    e.stopPropagation();
+                    if (popup.classList.contains('active')) { popup.classList.remove('active'); return; }
+                    refresh(); showMain(); popup.classList.add('active'); place();
+                };
+                // ===== Custom color page: wheel + shade box + hue/gray bars + H S V R G B sliders + hex =====
+                const mainView = document.getElementById('cp-main-view');
+                const customView = document.getElementById('cp-custom-view');
+                const wheel = document.getElementById('cp-wheel');
+                const marker = document.getElementById('cp-marker');
+                const svBox = document.getElementById('cp-sv'), svMarker = document.getElementById('cp-sv-marker');
+                const $ = id => document.getElementById(id);
+                const hSl = $('cp-h'), sSl = $('cp-s'), vSl = $('cp-v'), rSl = $('cp-r'), gSl = $('cp-g'), bSl = $('cp-b');
+                const hueBar = $('cp-hue-bar'), grayBar = $('cp-gray-bar');
+                const hexIn = $('cp-hex'), prev = $('cp-preview'), defGrid = $('cp-default-grid'), recentBox = $('cp-recent');
+                const W = 200;
+                let H = 0, S = 0, V = 1;
+                let recent = [];
+
+                const hsv2rgb = (h, s, v) => {
+                    const f = n => { const k = (n + h / 60) % 6; return v - v * s * Math.max(0, Math.min(k, 4 - k, 1)); };
+                    return [Math.round(f(5) * 255), Math.round(f(3) * 255), Math.round(f(1) * 255)];
+                };
+                const rgb2hsv = (r, g, b) => {
+                    r /= 255; g /= 255; b /= 255;
+                    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+                    let h = 0;
+                    if (d) { if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h *= 60; if (h < 0) h += 360; }
+                    return [h, mx ? d / mx : 0, mx];
+                };
+                const toHex = (r, g, b) => '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+
+                const drawWheel = () => {
+                    const ctx = wheel.getContext('2d'), N = wheel.width, R = N / 2;
+                    const img = ctx.createImageData(N, N);
+                    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+                        const dx = x - R + 0.5, dy = y - R + 0.5, dist = Math.sqrt(dx * dx + dy * dy), i = (y * N + x) * 4;
+                        if (dist <= R) {
+                            let h = Math.atan2(dy, dx) * 180 / Math.PI; if (h < 0) h += 360;
+                            const [r, g, b] = hsv2rgb(h, dist / R, 1);
+                            img.data[i] = r; img.data[i + 1] = g; img.data[i + 2] = b; img.data[i + 3] = 255;
+                        }
+                    }
+                    ctx.putImageData(img, 0, 0);
+                };
+                const syncUI = (skip) => {
+                    const [r, g, b] = hsv2rgb(H, S, V);
+                    const hex = toHex(r, g, b);
+                    const a = H * Math.PI / 180, rad = S * W / 2;
+                    marker.style.left = (W / 2 + Math.cos(a) * rad) + 'px';
+                    marker.style.top = (W / 2 + Math.sin(a) * rad) + 'px';
+                    wheel.style.filter = 'brightness(' + V + ')';
+                    const pure = hsv2rgb(H, 1, 1);
+                    svBox.style.backgroundColor = toHex(pure[0], pure[1], pure[2]);
+                    svMarker.style.left = (S * 100) + '%';
+                    svMarker.style.top = ((1 - V) * 100) + '%';
+                    hSl.value = Math.round(H); sSl.value = Math.round(S * 100); vSl.value = Math.round(V * 100);
+                    hueBar.value = Math.round(H);
+                    rSl.value = r; gSl.value = g; bSl.value = b;
+                    grayBar.value = Math.round((1 - (0.299 * r + 0.587 * g + 0.114 * b) / 255) * 255);
+                    $('cp-h-val').textContent = Math.round(H); $('cp-s-val').textContent = Math.round(S * 100); $('cp-v-val').textContent = Math.round(V * 100);
+                    $('cp-r-val').textContent = r; $('cp-g-val').textContent = g; $('cp-b-val').textContent = b;
+                    if (skip !== 'hex') hexIn.value = hex;
+                    prev.style.background = hex;
+                    return hex;
+                };
+                const setFromHex = (hex) => {
+                    const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+                    if (!m) return false;
+                    const n = parseInt(m[1], 16);
+                    [H, S, V] = rgb2hsv((n >> 16) & 255, (n >> 8) & 255, n & 255);
+                    return true;
+                };
+                const addRecent = (hex) => {
+                    recent = [hex].concat(recent.filter(c => c !== hex)).slice(0, 10);
+                    recentBox.innerHTML = '';
+                    recent.forEach(c => {
+                        const b = document.createElement('button');
+                        b.className = 'color-swatch'; b.style.background = c; b.title = c;
+                        b.onclick = () => { setFromHex(c); commit(syncUI()); };
+                        recentBox.appendChild(b);
+                    });
+                };
+                const commitAndRemember = () => { const hex = syncUI(); commit(hex); addRecent(hex); };
+
+                // wheel
+                const pickFromWheel = (e) => {
+                    const rect = wheel.getBoundingClientRect(), R = rect.width / 2;
+                    const dx = e.clientX - rect.left - R, dy = e.clientY - rect.top - R;
+                    const dist = Math.min(Math.sqrt(dx * dx + dy * dy), R);
+                    H = Math.atan2(dy, dx) * 180 / Math.PI; if (H < 0) H += 360;
+                    S = dist / R;
+                    if (V === 0) V = 1;
+                    syncUI();
+                };
+                let dragW = false;
+                wheel.addEventListener('pointerdown', e => { dragW = true; wheel.setPointerCapture(e.pointerId); pickFromWheel(e); });
+                wheel.addEventListener('pointermove', e => { if (dragW) pickFromWheel(e); });
+                wheel.addEventListener('pointerup', () => { dragW = false; commitAndRemember(); });
+
+                // shade box (saturation x/ brightness y)
+                const pickFromSV = (e) => {
+                    const rect = svBox.getBoundingClientRect();
+                    S = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                    V = 1 - Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+                    syncUI();
+                };
+                let dragS = false;
+                svBox.addEventListener('pointerdown', e => { dragS = true; svBox.setPointerCapture(e.pointerId); pickFromSV(e); });
+                svBox.addEventListener('pointermove', e => { if (dragS) pickFromSV(e); });
+                svBox.addEventListener('pointerup', () => { dragS = false; commitAndRemember(); });
+
+                // sliders
+                const bind = (el, fn) => {
+                    el.addEventListener('input', () => { fn(); syncUI(); });
+                    el.addEventListener('change', commitAndRemember);
+                };
+                bind(hSl, () => { H = +hSl.value; });
+                bind(hueBar, () => { H = +hueBar.value; });
+                bind(sSl, () => { S = sSl.value / 100; });
+                bind(vSl, () => { V = vSl.value / 100; });
+                bind(grayBar, () => { const v = 255 - (+grayBar.value); [H, S, V] = [0, 0, v / 255]; });
+                [rSl, gSl, bSl].forEach(sl => bind(sl, () => { [H, S, V] = rgb2hsv(+rSl.value, +gSl.value, +bSl.value); }));
+
+                // hex
+                hexIn.addEventListener('input', () => { if (/^#?[0-9a-f]{6}$/i.test(hexIn.value.trim())) { setFromHex(hexIn.value); syncUI('hex'); } });
+                hexIn.addEventListener('change', () => { if (setFromHex(hexIn.value)) commitAndRemember(); else syncUI(); });
+
+                // eyedropper (only where the browser supports it)
+                if (window.EyeDropper) {
+                    const eye = $('cp-eye'); eye.style.display = '';
+                    eye.onclick = async () => { try { const res = await new window.EyeDropper().open(); if (setFromHex(res.sRGBHex)) commitAndRemember(); } catch (e) {} };
+                }
+
+                presets.forEach(c => {
+                    const b = document.createElement('button');
+                    b.className = 'color-swatch'; b.style.background = c; b.title = c;
+                    b.onclick = () => { setFromHex(c); commitAndRemember(); };
+                    defGrid.appendChild(b);
+                });
+                const showMain = () => { customView.classList.add('hidden'); mainView.classList.remove('hidden'); popup.classList.remove('custom-mode'); popup.scrollTop = 0; };
+                const showCustom = () => {
+                    mainView.classList.add('hidden'); customView.classList.remove('hidden'); popup.classList.add('custom-mode');
+                    setFromHex(input.value); syncUI(); place();
+                };
+                $('cp-back').onclick = () => { showMain(); place(); };
+                $('cp-apply').onclick = () => { commitAndRemember(); popup.classList.remove('active'); showMain(); };
+                customBtn.onclick = showCustom;
+                drawWheel();
+                input.addEventListener('input', refresh);
+                input.addEventListener('change', refresh);
+                popup.addEventListener('click', e => e.stopPropagation());
+                document.addEventListener('click', () => popup.classList.remove('active'));
+                window.addEventListener('resize', () => popup.classList.remove('active'));
+                refresh();
+            })();
+            document.getElementById('size-slider').oninput = (e) => { 
+                appState.universalThickness = parseInt(e.target.value); 
+                applyToolToAll(); 
+            };
+
+            document.getElementById('btn-add-page').onclick = () => addPage('standard');
+            
+            // Page Style buttons (Blank, Grid, Single Lines, Dotted)
+            document.querySelectorAll('.page-style-btn').forEach(btn => {
+                btn.onclick = (e) => {
+                    const style = btn.dataset.style;
+                    appState.pageStyle = style;
+                    document.querySelectorAll('.page-style-btn').forEach(b => b.classList.remove('border-blue-500', 'active-page-style'));
+                    btn.classList.add('border-blue-500', 'active-page-style');
+                    
+                    const activePage = getPageRef(appState.activeCanvas);
+                    if (activePage && activePage.type !== 'graph') {
+                        activePage.style = style;
+                        renderBackground(activePage);
+                        updateHistory(activePage.canvas);
+                    }
+                    showToast(`Page style set to ${style.toUpperCase()}`);
+                };
+            });
+
+            // Millimeter Graph Button -> Open Graph Colors Modal
+            document.getElementById('btn-graph-page').onclick = () => {
+                document.getElementById('modal-graph-colors').classList.add('active');
+            };
+
+            // Graph choice click listener
+            document.querySelectorAll('.btn-graph-choice').forEach(btn => {
+                btn.onclick = () => {
+                    const color = btn.dataset.color || 'green';
+                    document.getElementById('modal-graph-colors').classList.remove('active');
+                    addPage('graph', null, color);
+                    showToast(`Added ${color.toUpperCase()} Millimeter Graph Page!`);
+                };
+            });
+
+            // Flowchart button in sidebar toolbar -> Open Modal
+            document.getElementById('btn-flowchart').onclick = () => {
+                document.getElementById('modal-flowchart').classList.add('active');
+            };
+
+            // Flowchart Modal Controls
+            document.getElementById('fc-dir-h').onclick = () => {
+                flowchartConfig.direction = 'horizontal';
+                document.getElementById('fc-dir-h').classList.add('active-type');
+                document.getElementById('fc-dir-v').classList.remove('active-type');
+            };
+            document.getElementById('fc-dir-v').onclick = () => {
+                flowchartConfig.direction = 'vertical';
+                document.getElementById('fc-dir-v').classList.add('active-type');
+                document.getElementById('fc-dir-h').classList.remove('active-type');
+            };
+
+            document.getElementById('fc-type-process').onclick = () => {
+                flowchartConfig.type = 'process';
+                document.querySelectorAll('.fc-type-btn').forEach(b => {
+                    if (b.id.startsWith('fc-type-')) b.classList.remove('active-type');
+                });
+                document.getElementById('fc-type-process').classList.add('active-type');
+                document.getElementById('fc-steps-row').style.display = 'block';
+            };
+            document.getElementById('fc-type-tree').onclick = () => {
+                flowchartConfig.type = 'tree';
+                document.querySelectorAll('.fc-type-btn').forEach(b => {
+                    if (b.id.startsWith('fc-type-')) b.classList.remove('active-type');
+                });
+                document.getElementById('fc-type-tree').classList.add('active-type');
+                document.getElementById('fc-steps-row').style.display = 'none';
+            };
+            document.getElementById('fc-type-single').onclick = () => {
+                flowchartConfig.type = 'single';
+                document.querySelectorAll('.fc-type-btn').forEach(b => {
+                    if (b.id.startsWith('fc-type-')) b.classList.remove('active-type');
+                });
+                document.getElementById('fc-type-single').classList.add('active-type');
+                document.getElementById('fc-steps-row').style.display = 'none';
+            };
+
+            document.getElementById('fc-step-dec').onclick = () => {
+                flowchartConfig.stepsCount = Math.max(2, flowchartConfig.stepsCount - 1);
+                document.getElementById('fc-step-val').innerText = `${flowchartConfig.stepsCount} Steps`;
+            };
+            document.getElementById('fc-step-inc').onclick = () => {
+                flowchartConfig.stepsCount = Math.min(8, flowchartConfig.stepsCount + 1);
+                document.getElementById('fc-step-val').innerText = `${flowchartConfig.stepsCount} Steps`;
+            };
+
+            document.querySelectorAll('.fc-theme-btn').forEach(btn => {
+                btn.onclick = () => {
+                    document.querySelectorAll('.fc-theme-btn').forEach(b => b.classList.remove('active-theme'));
+                    btn.classList.add('active-theme');
+                    flowchartConfig.theme = btn.dataset.theme || 'blue';
+                };
+            });
+
+            document.getElementById('btn-insert-flowchart').onclick = () => {
+                insertFlowchartOnCanvas();
+            };
+
+            // Flowchart HUD event listeners
+            document.getElementById('btn-fc-add-node').onclick = () => {
+                const node = getActiveFlowchartNode();
+                if (node) addConnectedFlowchartNode(node);
+                else showToast("Please select a flowchart block first.");
+            };
+            document.getElementById('btn-fc-add-branch').onclick = () => {
+                const node = getActiveFlowchartNode();
+                if (node) addLeafBranchNode(node);
+                else showToast("Please select a flowchart block first.");
+            };
+            document.getElementById('btn-fc-save-text').onclick = () => {
+                if (activeEditingNode && activeEditingNode.canvas) {
+                    const input = document.getElementById('fc-node-text-input');
+                    const newText = input.value.trim() || 'Step';
+                    activeEditingNode.nodeText = newText;
+                    if (activeEditingNode.item && activeEditingNode.item(1)) {
+                        activeEditingNode.item(1).set('text', newText);
+                        activeEditingNode.addWithUpdate();
+                    }
+                    activeEditingNode.canvas.requestRenderAll();
+                    updateHistory(activeEditingNode.canvas);
+                    checkActiveFlowchartHUD();
+                    showToast("Block text updated!");
+                }
+                document.getElementById('modal-fc-text').classList.remove('active');
+            };
+
+            document.getElementById('fc-node-text-input').onkeydown = (e) => {
+                if (e.key === 'Enter') {
+                    document.getElementById('btn-fc-save-text').click();
+                }
+            };
+
+            document.getElementById('btn-fc-edit-text').onclick = () => {
+                const node = getActiveFlowchartNode();
+                if (node) editFlowchartNodeText(node);
+                else showToast("Please select a flowchart block first.");
+            };
+            document.getElementById('btn-fc-del-node').onclick = () => {
+                const node = getActiveFlowchartNode();
+                if (node) deleteFlowchartNode(node);
+                else showToast("Please select a flowchart block first.");
+            };
+            document.getElementById('btn-fc-toggle-dir').onclick = () => {
+                flowchartConfig.direction = (flowchartConfig.direction === 'horizontal' ? 'vertical' : 'horizontal');
+                showToast(`Flowchart direction: ${flowchartConfig.direction.toUpperCase()}`);
+            };
+            document.getElementById('btn-fc-close').onclick = () => {
+                document.getElementById('flowchart-hud').classList.remove('active');
+            };
+            document.querySelectorAll('.fc-quick-color').forEach(btn => {
+                btn.onclick = () => {
+                    const node = getActiveFlowchartNode();
+                    if (node) changeFlowchartNodeTheme(node, btn.dataset.theme);
+                };
+            });
+
+            // Compass button in toolbar -> Open Instructions Modal
+            document.getElementById('btn-compass').onclick = () => {
+                document.getElementById('modal-compass-instructions').classList.add('active');
+            };
+
+            // Close Cross (✖) or Start button inside Instructions Modal -> Use Compass
+            const launchCompass = () => {
+                document.getElementById('modal-compass-instructions').classList.remove('active');
+                spawnCompass();
+            };
+            document.getElementById('btn-close-compass-instructions').onclick = launchCompass;
+            document.getElementById('btn-start-compass').onclick = launchCompass;
+
+            // Compass HUD listeners
+            document.getElementById('btn-compass-dec-r').onclick = () => {
+                const comp = getActiveCompass();
+                if (comp) setCompassRadius(comp, comp.radius - 0.5 * PX_PER_CM);
+            };
+            document.getElementById('btn-compass-inc-r').onclick = () => {
+                const comp = getActiveCompass();
+                if (comp) setCompassRadius(comp, comp.radius + 0.5 * PX_PER_CM);
+            };
+            document.getElementById('compass-radius-slider').oninput = (e) => {
+                const comp = getActiveCompass();
+                if (comp) setCompassRadius(comp, parseFloat(e.target.value) * PX_PER_CM);
+            };
+            document.getElementById('compass-radius-num').onchange = (e) => {
+                const comp = getActiveCompass();
+                if (comp) setCompassRadius(comp, parseFloat(e.target.value) * PX_PER_CM);
+            };
+            document.getElementById('btn-compass-rot-ccw').onclick = () => {
+                const comp = getActiveCompass();
+                if (comp) rotateCompassAroundNeedle(comp, -15);
+            };
+            document.getElementById('btn-compass-rot-cw').onclick = () => {
+                const comp = getActiveCompass();
+                if (comp) rotateCompassAroundNeedle(comp, 15);
+            };
+            document.getElementById('btn-compass-draw-circle').onclick = () => {
+                const comp = getActiveCompass();
+                if (comp) drawCompassCircle(comp);
+            };
+            document.getElementById('btn-compass-draw-arc').onclick = () => {
+                const comp = getActiveCompass();
+                if (comp) drawCompassArc(comp, 90);
+            };
+            document.getElementById('btn-compass-close').onclick = () => {
+                const comp = getActiveCompass();
+                if (comp) removeCompass(comp);
+            };
+            
+            document.getElementById('import-img').onchange = handleImageImport;
+            document.getElementById('import-pdf').onchange = handlePDFImport;
+        }
+
+        function setupShapesGrid() {
+            const grid = document.getElementById('shapes-grid-container');
+            shapesList.forEach((s) => {
+                const btn = document.createElement('button'); btn.className = 'shape-btn';
+                btn.innerHTML = `<svg viewBox="0 0 100 100">${s.svg}</svg><span>${s.name}</span>`;
+                btn.onclick = () => {
+                    if(!appState.activeCanvas) appState.activeCanvas = appState.canvases[0].canvas;
+                    const obj = s.draw();
+                    
+                    // APPLY UNIVERSAL COLOR AND THICKNESS TO SHAPE
+                    obj.set({
+                        left: appState.activeCanvas.width/2, 
+                        top: appState.activeCanvas.height/2,
+                        fill: 'transparent', 
+                        stroke: appState.universalColor, 
+                        strokeWidth: appState.universalThickness,
+                        originX: 'center', 
+                        originY: 'center', 
+                        isUIElement: false
+                    });
+                    appState.activeCanvas.add(obj); appState.activeCanvas.setActiveObject(obj);
+                    
+                    appState.tool = 'select';
+                    document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                    document.querySelector('[data-tool="select"]').classList.add('active');
+                    applyToolToAll();
+                    updateHistory(appState.activeCanvas);
+                    document.getElementById('modal-shapes').classList.remove('active');
+                };
+                grid.appendChild(btn);
+            });
+        }
+
+                // --- Dynamic Page Date & Page Number Header ---
+        function getPageHeaderDateString() {
+            const now = new Date();
+            const dd = String(now.getDate()).padStart(2, '0');
+            const mm = String(now.getMonth() + 1).padStart(2, '0');
+            const yyyy = now.getFullYear();
+            const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            const dayName = days[now.getDay()];
+            return `${dd}/${mm}/${yyyy} - ${dayName}`;
+        }
+
+        function getPageHeaderColor() {
+            const theme = appState.theme;
+            if (theme === 'black') {
+                return 'rgba(255, 255, 255, 0.72)'; // Translucent white on black pages
+            } else if (theme === 'gray') {
+                return '#ffffff'; // Opaque total white on gray pages
+            } else {
+                return 'rgba(0, 0, 0, 0.65)'; // Translucent black on whitish pages
+            }
+        }
+
+        function updateAllPageHeaders() {
+            const totalPages = appState.canvases.length;
+            const dateStr = getPageHeaderDateString();
+            const color = getPageHeaderColor();
+
+            appState.canvases.forEach((pageRef, idx) => {
+                const cvs = pageRef.canvas;
+                const pageNum = idx + 1;
+                const pageText = dateStr + "\n" + pageNum + " / " + totalPages;
+
+                let headerObj = cvs.getObjects().find(o => o.isPageHeader);
+                if (headerObj) {
+                    headerObj.set({
+                        text: pageText,
+                        fill: color,
+                        left: cvs.width - 45,
+                        top: 26,
+                        scaleX: 0.95,
+                        scaleY: 1.15,
+                        charSpacing: 35,
+                        lineHeight: 1.35
+                    });
+                    cvs.requestRenderAll();
+                } else {
+                    headerObj = new fabric.Text(pageText, {
+                        left: cvs.width - 45,
+                        top: 26,
+                        originX: 'right',
+                        originY: 'top',
+                        textAlign: 'right',
+                        fontSize: 19,
+                        scaleX: 0.95,
+                        scaleY: 1.15,
+                        charSpacing: 35,
+                        lineHeight: 1.35,
+                        fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+                        fontWeight: '600',
+                        fill: color,
+                        selectable: false,
+                        evented: false,
+                        isUIElement: false,
+                        isPageHeader: true
+                    });
+                    cvs.add(headerObj);
+                    cvs.requestRenderAll();
+                }
+            });
+        }
+
+        function addPage(type = 'standard', bgImageDataUrl = null, graphColor = 'green', quiet = false) {
+            pageCounter++; const pageId = 'canvas-page-' + pageCounter;
+            
+            const wrapper = document.createElement('div'); wrapper.className = 'canvas-wrapper vertical'; wrapper.id = 'wrapper-' + pageId;
+            const sideBtns = document.createElement('div'); sideBtns.className = 'page-side-btns';
+            const btnDelete = document.createElement('button'); btnDelete.className = 'btn-delete-page'; btnDelete.innerHTML = '✖'; btnDelete.title = 'Delete this page'; btnDelete.onclick = () => deletePage(pageId);
+            const rotWrap = document.createElement('div'); rotWrap.className = 'rot-wrap';
+            const btnRot = document.createElement('button'); btnRot.className = 'btn-rotate-page'; btnRot.title = 'Rotate page clockwise';
+            btnRot.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>';
+            let rotSpin = 0;
+            btnRot.onclick = () => { rotSpin += 90; btnRot.firstChild.style.transform = 'rotate(' + rotSpin + 'deg)'; rotatePage(pageId); };
+            const rotLbl = document.createElement('span'); rotLbl.className = 'rot-label'; rotLbl.innerHTML = 'clockwise<br>rotate';
+            rotWrap.appendChild(btnRot); rotWrap.appendChild(rotLbl);
+            sideBtns.appendChild(btnDelete); sideBtns.appendChild(rotWrap);
+            wrapper.appendChild(sideBtns);
+
+            const canvasEl = document.createElement('canvas'); canvasEl.id = pageId; wrapper.appendChild(canvasEl);
+            document.getElementById('pages-container').insertBefore(wrapper, document.getElementById('btn-add-page'));
+
+            const w = GRAPH_W; const h = GRAPH_H; // every page type now defaults to vertical (same size as graph paper)
+
+            const fabCanvas = new fabric.Canvas(pageId, { width: w, height: h, isDrawingMode: true, selection: false, preserveObjectStacking: true });
+            fabCanvas.on('mouse:down', () => { 
+                appState.activeCanvas = fabCanvas; 
+                updateSelectedPageHighlight();
+                checkActiveCompassHUD();
+            });
+
+            const pageRef = { 
+                id: pageId, 
+                canvas: fabCanvas, 
+                type: type, 
+                style: (type === 'graph' ? 'graph' : appState.pageStyle || 'grid'), 
+                graphColor: graphColor,
+                rot: 0,
+                bgImage: bgImageDataUrl, 
+                undoStack: [], 
+                redoStack: [], 
+                historyProcessing: false 
+            };
+            appState.canvases.push(pageRef);
+            appState.activeCanvas = fabCanvas; // a newly added page becomes the selected page
+
+            renderBackground(pageRef); setupCanvasEvents(fabCanvas); applyTool(fabCanvas);
+            if (!quiet) {
+                setTimeout(() => wrapper.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+                updateDeleteButtons();
+                updateAllPageHeaders();
+                updateSelectedPageHighlight();
+            }
+            
+            setTimeout(() => updateHistory(fabCanvas), 200);
+            return pageRef;
+        }
+
+        function deletePage(pageId) {
+            if (appState.canvases.length <= 1) return;
+            document.getElementById('wrapper-' + pageId)?.remove();
+            if (typeof pdfLazyForget === 'function') pdfLazyForget(pageId);
+            appState.canvases = appState.canvases.filter(p => p.id !== pageId);
+            if(appState.activeCanvas && appState.activeCanvas.lowerCanvasEl.id === pageId) appState.activeCanvas = appState.canvases[0].canvas;
+            updateDeleteButtons();
+            updateAllPageHeaders();
+            updateSelectedPageHighlight();
+        }
+
+        // Lilac thin boundary around the selected (active) page
+        function updateSelectedPageHighlight() {
+            appState.canvases.forEach(p => {
+                const w = document.getElementById('wrapper-' + p.id);
+                if (w) w.classList.toggle('page-selected', p.canvas === appState.activeCanvas);
+            });
+        }
+
+        // Rotate one page 90 degrees clockwise (page and its drawings turn together)
+        function rotatePage(pageId) {
+            const p = appState.canvases.find(x => x.id === pageId);
+            if (!p) return;
+            const cvs = p.canvas, oW = cvs.width, oH = cvs.height, nW = oH, nH = oW;
+            appState.activeCanvas = cvs;
+            cvs.discardActiveObject();
+            cvs.getObjects().forEach(o => {
+                if (o.isPageHeader) return;
+                const c = o.getCenterPoint();
+                const dx = c.x - oW / 2, dy = c.y - oH / 2;
+                o.set('angle', ((o.angle || 0) + 90) % 360);
+                o.setPositionByOrigin(new fabric.Point(nW / 2 - dy, nH / 2 + dx), 'center', 'center');
+                o.setCoords();
+            });
+            cvs.setDimensions({ width: nW, height: nH });
+            cvs.calcOffset();
+            const wrap = document.getElementById('wrapper-' + pageId);
+            if (wrap) { const land = nW > nH; wrap.classList.toggle('landscape', land); wrap.classList.toggle('vertical', !land); wrap._base = undefined; }
+            p.rot = ((p.rot || 0) + 1) % 4;
+            renderBackground(p);
+            updateAllPageHeaders();
+            p.undoStack = []; p.redoStack = [];
+            cvs.requestRenderAll();
+            updateHistory(cvs);
+            updateSelectedPageHighlight();
+            if (typeof checkActiveCompassHUD === 'function') checkActiveCompassHUD();
+        }
+        
+        function updateDeleteButtons() { 
+            const d = appState.canvases.length > 1 ? 'flex' : 'none'; 
+            document.querySelectorAll('.btn-delete-page').forEach(b => b.style.display = d); 
+        }
+        
+        function clearAllCanvases() { 
+            appState.canvases.forEach(p => { 
+                p.canvas.getObjects().forEach(o => { if(!o.isUIElement && !o.isPageHeader) p.canvas.remove(o); });
+                p.canvas.requestRenderAll(); updateHistory(p.canvas); 
+            }); 
+        }
+
+        function createBlankBackground(themeHex) {
+            const pc = document.createElement('canvas'); pc.width = 40; pc.height = 40;
+            const ctx = pc.getContext('2d'); ctx.fillStyle = themeHex; ctx.fillRect(0, 0, 40, 40);
+            return new fabric.Pattern({ source: pc, repeat: 'repeat' });
+        }
+
+        function createStandardGrid(themeHex, lineHex) {
+            const pc = document.createElement('canvas'); pc.width = 40; pc.height = 40;
+            const ctx = pc.getContext('2d'); ctx.fillStyle = themeHex; ctx.fillRect(0, 0, 40, 40);
+            ctx.strokeStyle = lineHex; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, 40); ctx.lineTo(0, 0); ctx.lineTo(40, 0); ctx.stroke();
+            return new fabric.Pattern({ source: pc, repeat: 'repeat' });
+        }
+
+        function createSingleLinesGrid(themeHex, lineHex) {
+            const pc = document.createElement('canvas'); pc.width = 40; pc.height = 36;
+            const ctx = pc.getContext('2d'); ctx.fillStyle = themeHex; ctx.fillRect(0, 0, 40, 36);
+            ctx.strokeStyle = lineHex; ctx.lineWidth = 1; ctx.beginPath();
+            ctx.moveTo(0, 35.5); ctx.lineTo(40, 35.5); ctx.stroke();
+            return new fabric.Pattern({ source: pc, repeat: 'repeat' });
+        }
+
+        function createDottedGrid(themeHex, dotColor) {
+            const pc = document.createElement('canvas'); pc.width = 36; pc.height = 36;
+            const ctx = pc.getContext('2d'); ctx.fillStyle = themeHex; ctx.fillRect(0, 0, 36, 36);
+            ctx.fillStyle = dotColor; ctx.beginPath(); ctx.arc(18, 18, 1.2, 0, Math.PI * 2); ctx.fill();
+            return new fabric.Pattern({ source: pc, repeat: 'repeat' });
+        }
+
+        function createMillimeterGrid(themeHex, graphColor = 'green') {
+            const isDark = (appState.theme === 'black');
+            let bg = themeHex;
+            let cMaj = 'rgba(34, 197, 94, 0.85)', cMid = 'rgba(34, 197, 94, 0.55)', cMin = 'rgba(34, 197, 94, 0.22)';
+            
+            if (graphColor === 'green') {
+                bg = isDark ? '#052e16' : '#f0fdf4';
+                cMaj = 'rgba(22, 163, 74, 0.85)'; cMid = 'rgba(34, 197, 94, 0.55)'; cMin = 'rgba(74, 222, 128, 0.22)';
+            } else if (graphColor === 'blue') {
+                bg = isDark ? '#0f172a' : '#f0f9ff';
+                cMaj = 'rgba(37, 99, 235, 0.85)'; cMid = 'rgba(59, 130, 246, 0.55)'; cMin = 'rgba(96, 165, 250, 0.22)';
+            } else if (graphColor === 'red') {
+                bg = isDark ? '#4c0519' : '#fff1f2';
+                cMaj = 'rgba(225, 29, 72, 0.85)'; cMid = 'rgba(244, 63, 94, 0.55)'; cMin = 'rgba(251, 113, 133, 0.22)';
+            } else if (graphColor === 'orange') {
+                bg = isDark ? '#431407' : '#fff7ed';
+                cMaj = 'rgba(234, 88, 12, 0.85)'; cMid = 'rgba(249, 115, 22, 0.55)'; cMin = 'rgba(251, 146, 60, 0.22)';
+            } else if (graphColor === 'bw') {
+                bg = isDark ? '#000000' : '#ffffff';
+                cMaj = isDark ? 'rgba(255, 255, 255, 0.75)' : 'rgba(31, 41, 55, 0.85)';
+                cMid = isDark ? 'rgba(255, 255, 255, 0.45)' : 'rgba(75, 85, 99, 0.55)';
+                cMin = isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(156, 163, 175, 0.25)';
+            }
+
+            const pc = document.createElement('canvas'); pc.width = 100; pc.height = 100;
+            const ctx = pc.getContext('2d'); ctx.fillStyle = bg; ctx.fillRect(0, 0, 100, 100);
+            for(let i=0; i<=100; i+=10) {
+                ctx.beginPath();
+                ctx.strokeStyle = (i%50===0) ? (i%100===0 ? cMaj : cMid) : cMin;
+                ctx.lineWidth = (i%100===0) ? 2 : (i%50===0 ? 1 : 0.5);
+                ctx.moveTo(i, 0); ctx.lineTo(i, 100); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(100, i); ctx.stroke();
+            }
+            return new fabric.Pattern({ source: pc, repeat: 'repeat' });
+        }
+
+        function renderBackground(pageRef, done) {
+            const theme = appState.theme; let tHex = '#ffffff', lHex = '#e5e7eb', dotHex = '#64748b';
+            if (theme === 'black') { tHex = '#000000'; lHex = '#1f2937'; dotHex = '#475569'; } 
+            else if (theme === 'gray') { tHex = '#9ca3af'; lHex = '#6b7280'; dotHex = '#374151'; }
+
+            let pat;
+            if (pageRef.type === 'graph') {
+                pat = createMillimeterGrid(tHex, pageRef.graphColor || 'green');
+            } else {
+                const style = pageRef.style || appState.pageStyle || 'grid';
+                if (style === 'blank') pat = createBlankBackground(tHex);
+                else if (style === 'lines') pat = createSingleLinesGrid(tHex, lHex);
+                else if (style === 'dots') pat = createDottedGrid(tHex, dotHex);
+                else pat = createStandardGrid(tHex, lHex);
+            }
+            
+            if (pageRef.bgImage) {
+                pageRef.canvas.setBackgroundColor(pat, () => {
+                    fabric.Image.fromURL(pageRef.bgImage, (img) => {
+                        const q = pageRef.rot || 0, sw = (q % 2) ? img.height : img.width, sh = (q % 2) ? img.width : img.height;
+                        const scale = Math.min(pageRef.canvas.width / sw, pageRef.canvas.height / sh);
+                        img.set({ originX: 'center', originY: 'center', left: pageRef.canvas.width/2, top: pageRef.canvas.height/2, scaleX: scale, scaleY: scale, angle: q * 90 });
+                        pageRef.canvas.setBackgroundImage(img, () => { pageRef.canvas.requestRenderAll(); if (done) done(); });
+                    });
+                });
+            } else {
+                pageRef.canvas.setBackgroundImage(null, () => {});
+                pageRef.canvas.setBackgroundColor(pat, () => { pageRef.canvas.requestRenderAll(); if (done) done(); });
+            }
+        }
+
+        function setTheme(newTheme) {
+            const oldTheme = appState.theme; appState.theme = newTheme;
+            appState.canvases.forEach(page => {
+                renderBackground(page);
+                if ((oldTheme === 'black' && newTheme === 'white') || (oldTheme === 'black' && newTheme === 'gray')) {
+                    page.canvas.getObjects().forEach(o => { 
+                        if (o.stroke === '#ffffff' || o.stroke === 'white') o.set('stroke', '#000000'); 
+                        if (o.fill === '#ffffff' || o.fill === 'white') o.set('fill', '#000000'); 
+                    });
+                } else if ((oldTheme === 'white' && newTheme === 'black') || (oldTheme === 'gray' && newTheme === 'black')) {
+                    page.canvas.getObjects().forEach(o => { 
+                        if (o.stroke === '#000000' || o.stroke === 'black') o.set('stroke', '#ffffff'); 
+                        if (o.fill === '#000000' || o.fill === 'black') o.set('fill', '#ffffff'); 
+                    });
+                }
+                page.canvas.requestRenderAll();
+                updateHistory(page.canvas);
+            });
+            updateAllPageHeaders();
+        }
+
+        function applyToolToAll() { appState.canvases.forEach(p => applyTool(p.canvas)); updatePreviewMode(); }
+
+        function applyTool(canvas) {
+            const { tool, universalColor, universalThickness } = appState;
+
+            // Leaving text editing when switching to a drawing / preview tool
+            if (tool !== 'text' && tool !== 'select') {
+                const ao = canvas.getActiveObject();
+                if (ao && ao.isEditing) ao.exitEditing();
+            }
+
+            // PREVIEW tool: no drawing/selecting, pages can only be zoomed & panned
+            if (tool === 'preview') {
+                canvas.isDrawingMode = false;
+                canvas.selection = false;
+                canvas.discardActiveObject();
+                canvas.defaultCursor = 'grab';
+                canvas.forEachObject(o => { o.selectable = false; o.evented = false; });
+                canvas.requestRenderAll();
+                return;
+            }
+
+            // SELECT PAGE tool: no drawing; tapping a page makes it the active page
+            if (tool === 'selectpage') {
+                canvas.isDrawingMode = false;
+                canvas.selection = false;
+                canvas.discardActiveObject();
+                canvas.defaultCursor = 'pointer';
+                canvas.forEachObject(o => { o.selectable = false; o.evented = false; });
+                canvas.requestRenderAll();
+                return;
+            }
+
+            // TEXT tool: tap to place plain text, tap existing text to edit
+            if (tool === 'text') {
+                canvas.isDrawingMode = false;
+                canvas.selection = false;
+                canvas.defaultCursor = 'text';
+                canvas.forEachObject(o => { o.selectable = true; o.evented = true; });
+                canvas.requestRenderAll();
+                return;
+            }
+
+            if (tool === 'select' || tool === 'eraser-section') {
+                canvas.isDrawingMode = false;
+                canvas.selection = tool === 'select' || tool === 'eraser-section';
+                canvas.defaultCursor = tool === 'select' ? 'default' : 'crosshair';
+                canvas.forEachObject(o => { o.selectable = true; o.evented = true; });
+                canvas.requestRenderAll();
+                return;
+            }
+
+            canvas.isDrawingMode = true;
+            canvas.selection = false;
+            canvas.defaultCursor = 'default';
+            canvas.forEachObject(o => { o.selectable = false; o.evented = false; });
+
+            const brush = new fabric.PencilBrush(canvas);
+            
+            // APPLY UNIVERSAL COLOR AND THICKNESS ENGINE LOGIC
+            if (tool === 'pen') { 
+                brush.color = universalColor; 
+                brush.width = universalThickness; 
+            }
+            else if (tool === 'pencil') { 
+                brush.color = universalColor; 
+                brush.width = Math.max(1, universalThickness / 2); 
+            }
+            else if (tool === 'highlighter') {
+                // Convert Hex to RGBA dynamically based on universal color
+                const rgb = hexToRgb(universalColor);
+                brush.color = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.4)`; 
+                brush.width = universalThickness * 4;
+            }
+            else if (tool === 'eraser-pixel') { 
+                brush.color = 'rgba(239, 68, 68, 0.5)'; 
+                brush.width = universalThickness * 3; 
+            }
+            
+            canvas.freeDrawingBrush = brush;
+            brush.getPointer = function(e, ignoreZoom) { return this.canvas.getPointer(e, ignoreZoom); }
+        }
+
+        // --- Snapping Algorithm ---
+        function overrideFabricSnapping() {
+            const originalGetPointer = fabric.Canvas.prototype.getPointer;
+            fabric.Canvas.prototype.getPointer = function(e, ignoreZoom) {
+                let pt = originalGetPointer.call(this, e, ignoreZoom);
+                if (this.isDrawingMode && ['pen', 'pencil', 'highlighter'].includes(appState.tool)) { pt = applySnappingLogic(this, pt); }
+                return pt;
+            };
+        }
+
+        function applySnappingLogic(canvas, pt) {
+            const SNAP_THRESHOLD = 100; // Increased threshold exactly as requested
+            let bestPt = pt; let minDist = SNAP_THRESHOLD;
+            
+            canvas.getObjects().forEach(o => {
+                if (!o.isRuler && !o.isProtractor && !o.isSetSquare && !o.isCompass) return;
+                let m = o.calcTransformMatrix(); 
+                let w = o.width, h = o.height;
+                const t = (lx, ly) => fabric.util.transformPoint({x: lx, y: ly}, m);
+
+                if (o.isCompass) {
+                    let needlePoint = fabric.util.transformPoint({ x: o.localCx, y: o.localCy }, m);
+                    let pencilPoint = fabric.util.transformPoint({ x: o.localPx, y: o.localPy }, m);
+                    let canvasRadius = Math.hypot(pencilPoint.x - needlePoint.x, pencilPoint.y - needlePoint.y);
+                    let distToCenter = Math.hypot(pt.x - needlePoint.x, pt.y - needlePoint.y);
+                    let distToArc = Math.abs(distToCenter - canvasRadius);
+                    if (distToArc < minDist) {
+                        minDist = distToArc;
+                        let angle = Math.atan2(pt.y - needlePoint.y, pt.x - needlePoint.x);
+                        bestPt = { x: needlePoint.x + canvasRadius * Math.cos(angle), y: needlePoint.y + canvasRadius * Math.sin(angle) };
+                    }
+                    return;
+                }
+
+                if (o.isRuler) {
+                    let corners = [ t(-w/2, -h/2), t(w/2, -h/2), t(w/2, h/2), t(-w/2, h/2) ];
+                    let segments = [ [corners[0], corners[1]], [corners[1], corners[2]], [corners[2], corners[3]], [corners[3], corners[0]] ];
+                    checkSegments(pt, segments, (proj, dist) => { if(dist < minDist) { minDist = dist; bestPt = proj; } });
+                } 
+                else if (o.isSetSquare) {
+                    let corners = [ t(-w/2 + 20, -h/2 + 20), t(-w/2 + 20, h/2 - 20), t(w/2 - 20, h/2 - 20) ];
+                    let segments = [ [corners[0], corners[1]], [corners[1], corners[2]], [corners[2], corners[0]] ];
+                    checkSegments(pt, segments, (proj, dist) => { if(dist < minDist) { minDist = dist; bestPt = proj; } });
+                }
+                else if (o.isProtractor) {
+                    let cx_local = 0; let cy_local = 120; let r_local = 250;
+                    let bottom_left = t(-250, 120); let bottom_right = t(250, 120);
+                    checkSegments(pt, [[bottom_left, bottom_right]], (proj, dist) => { if(dist < minDist) { minDist = dist; bestPt = proj; } });
+                    
+                    let center = t(cx_local, cy_local);
+                    let canvasRadius = r_local * o.scaleX;
+                    let distToCenter = Math.hypot(pt.x - center.x, pt.y - center.y);
+                    let distToArc = Math.abs(distToCenter - canvasRadius);
+                    if (distToArc < minDist) {
+                        let invM = fabric.util.invertTransform(m);
+                        let localPt = fabric.util.transformPoint(pt, invM);
+                        if (localPt.y <= cy_local) {
+                            minDist = distToArc;
+                            let angle = Math.atan2(pt.y - center.y, pt.x - center.x);
+                            bestPt = { x: center.x + canvasRadius * Math.cos(angle), y: center.y + canvasRadius * Math.sin(angle) };
+                        }
+                    }
+                }
+            });
+            return bestPt;
+        }
+
+        function checkSegments(pt, segments, callback) {
+            segments.forEach(seg => {
+                let p1 = seg[0], p2 = seg[1];
+                let l2 = Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2);
+                if (l2 === 0) return;
+                let t = Math.max(0, Math.min(1, ((pt.x - p1.x) * (p2.x - p1.x) + (pt.y - p1.y) * (p2.y - p1.y)) / l2));
+                let proj = { x: p1.x + t * (p2.x - p1.x), y: p1.y + t * (p2.y - p1.y) };
+                let dist = Math.hypot(pt.x - proj.x, pt.y - proj.y);
+                callback(proj, dist);
+            });
+        }
+
+        function setupCanvasEvents(canvas) {
+            canvas.on('selection:created', () => {
+                if (appState.tool === 'eraser-section') {
+                    canvas.getActiveObjects().forEach(o => { if(!o.isUIElement) canvas.remove(o); });
+                    canvas.discardActiveObject(); canvas.requestRenderAll();
+                    updateHistory(canvas);
+                }
+            });
+            canvas.on('selection:updated', () => {
+                if (appState.tool === 'eraser-section') {
+                    canvas.getActiveObjects().forEach(o => { if(!o.isUIElement) canvas.remove(o); });
+                    canvas.discardActiveObject(); canvas.requestRenderAll();
+                    updateHistory(canvas);
+                }
+            });
+            
+            canvas.on('path:created', (e) => {
+                if (appState.tool === 'eraser-pixel') {
+                    const p = e.path; p.setCoords();
+                    const objs = canvas.getObjects().filter(o => o !== p && !o.isUIElement);
+                    objs.forEach(o => { if (p.intersectsWithObject(o) || p.isContainedWithinObject(o) || o.isContainedWithinObject(p)) canvas.remove(o); });
+                    canvas.remove(p); canvas.requestRenderAll();
+                    updateHistory(canvas);
+                }
+            });
+
+            canvas.on('object:modified', function(e) {
+                let obj = e.target;
+                if (obj.isRuler && (obj.scaleX !== 1 || obj.scaleY !== 1)) {
+                    let newWidth = Math.min(3780, Math.max(200, obj.width * obj.scaleX));
+                    obj.set({ scaleX: 1, scaleY: 1, width: newWidth });
+                    obj.setSrc(generateRulerSVG(newWidth), () => canvas.requestRenderAll());
+                } else if (obj.isCompass) {
+                    if (obj.scaleX !== 1 || obj.scaleY !== 1) {
+                        const newR = obj.radius * Math.max(obj.scaleX, obj.scaleY);
+                        setCompassRadius(obj, newR);
+                    } else {
+                        updateCompassHUD(obj);
+                    }
+                } else if (obj.isFlowchartNode) {
+                    // Pull to extend / push to shrink gesture logic
+                    if (obj.scaleX > 1.3 || obj.scaleY > 1.3) {
+                        obj.set({ scaleX: 1, scaleY: 1 });
+                        obj.setCoords();
+                        addConnectedFlowchartNode(obj);
+                        showToast("Pulled outward: Added connected subordinate node!");
+                    } else if (obj.scaleX < 0.75 || obj.scaleY < 0.75) {
+                        obj.set({ scaleX: 1, scaleY: 1 });
+                        obj.setCoords();
+                        deleteFlowchartNode(obj);
+                        showToast("Pushed inward: Removed node.");
+                    }
+                }
+            });
+
+            canvas.on('mouse:dblclick', (e) => {
+                if (e.target && e.target.isFlowchartNode) {
+                    editFlowchartNodeText(e.target);
+                }
+            });
+
+            canvas.on('selection:created', (e) => {
+                if (e.target && e.target.isCompass) {
+                    updateCompassHUD(e.target);
+                    document.getElementById('compass-hud').classList.add('active');
+                }
+                if (e.target && e.target.isFlowchartNode) {
+                    checkActiveFlowchartHUD();
+                }
+            });
+
+            canvas.on('selection:updated', (e) => {
+                if (e.target && e.target.isFlowchartNode) {
+                    checkActiveFlowchartHUD();
+                }
+            });
+
+            canvas.on('selection:cleared', () => {
+                checkActiveCompassHUD();
+                const fchud = document.getElementById('flowchart-hud');
+                if (fchud) fchud.classList.remove('active');
+            });
+
+            const saveHist = (e) => { if(e.target && e.target.isUIElement) return; updateHistory(canvas); };
+            canvas.on('path:created', saveHist);
+            canvas.on('object:modified', saveHist);
+
+            setupTextEvents(canvas);
+        }
+
+        function getPageRef(canvas) { return appState.canvases.find(p => p.canvas === canvas); }
+        
+        function updateHistory(canvas) {
+            const page = getPageRef(canvas);
+            if(!page || page.historyProcessing) return;
+            const objects = canvas.getObjects().filter(o => !o.isUIElement && !o.isPageHeader).map(o => o.toObject(['selectable', 'evented', 'isUIElement', 'isPageHeader']));
+            page.undoStack.push(JSON.stringify(objects));
+            page.redoStack = [];
+            if(page.undoStack.length > 30) page.undoStack.shift(); 
+        }
+
+        function undo() {
+            const page = getPageRef(appState.activeCanvas);
+            if(!page || page.undoStack.length <= 1) return;
+            page.historyProcessing = true;
+            
+            page.redoStack.push(page.undoStack.pop());
+            const stateStr = page.undoStack[page.undoStack.length - 1];
+            restoreState(page, JSON.parse(stateStr));
+        }
+
+        function redo() {
+            const page = getPageRef(appState.activeCanvas);
+            if(!page || page.redoStack.length === 0) return;
+            page.historyProcessing = true;
+            
+            const stateStr = page.redoStack.pop();
+            page.undoStack.push(stateStr);
+            restoreState(page, JSON.parse(stateStr));
+        }
+
+        function restoreState(page, stateObjects) {
+            const nonHistory = page.canvas.getObjects().filter(o => o.isUIElement || o.isPageHeader);
+            page.canvas.remove(...page.canvas.getObjects());
+            
+            fabric.util.enlivenObjects(stateObjects, (enlivedObjects) => {
+                enlivedObjects.forEach(obj => { page.canvas.add(obj); });
+                nonHistory.forEach(el => page.canvas.add(el)); 
+                page.canvas.requestRenderAll();
+                page.historyProcessing = false;
+            });
+        }
+
+        function spawnInstrument(type) {
+            if(!appState.activeCanvas) appState.activeCanvas = appState.canvases[0].canvas;
+            document.getElementById('modal-rulers').classList.remove('active');
+            
+            let exists = false;
+            appState.activeCanvas.getObjects().forEach(o => { 
+                if(o.isRuler && type === 'ruler') exists = true; 
+                if(o.isProtractor && type === 'protractor') exists = true; 
+                if(o.isSetSquare && type === 'setsquare') exists = true; 
+            });
+            if (exists) { showToast(`Only one ${type} allowed per page.`); return; }
+
+            let svgStr = '';
+            if(type === 'ruler') svgStr = generateRulerSVG();
+            else if (type === 'protractor') svgStr = generateProtractorSVG();
+            else if (type === 'setsquare') svgStr = generateSetSquareSVG();
+
+            fabric.Image.fromURL(svgStr, (img) => {
+                img.set({
+                    left: appState.activeCanvas.width/2, top: appState.activeCanvas.height/2, originX: 'center', originY: 'center',
+                    isUIElement: true, isRuler: type === 'ruler', isProtractor: type === 'protractor', isSetSquare: type === 'setsquare'
+                });
+                if (type === 'ruler') img.setControlsVisibility({ mt: false, mb: false, tr: false, tl: false, bl: false, br: false, mtr: true, ml: true, mr: true });
+                
+                appState.activeCanvas.add(img); appState.activeCanvas.setActiveObject(img);
+                
+                appState.tool = 'select';
+                document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                document.querySelector('[data-tool="select"]').classList.add('active');
+                applyToolToAll();
+            });
+        }
+
+        // --- Precision Geometry Compass Implementation ---
+        function getActiveCompass() {
+            if (!appState.activeCanvas) return null;
+            return appState.activeCanvas.getObjects().find(o => o.isCompass) || null;
+        }
+
+        function checkActiveCompassHUD() {
+            const comp = getActiveCompass();
+            const hud = document.getElementById('compass-hud');
+            if (comp) {
+                hud.classList.add('active');
+                updateCompassHUD(comp);
+            } else {
+                hud.classList.remove('active');
+            }
+        }
+
+        function spawnCompass() {
+            if(!appState.activeCanvas) appState.activeCanvas = appState.canvases[0].canvas;
+            document.querySelectorAll('.overlay').forEach(m => m.classList.remove('active'));
+            
+            const cvs = appState.activeCanvas;
+            const existing = cvs.getObjects().find(o => o.isCompass);
+            if (existing) {
+                cvs.setActiveObject(existing);
+                cvs.requestRenderAll();
+                checkActiveCompassHUD();
+                showToast("Compass is already active on this page. Adjust or move it.");
+                return;
+            }
+
+            const defaultRadius = 5.0 * PX_PER_CM;
+            const pad = 55;
+            const w = Math.round(defaultRadius + pad * 2);
+            const leg_h = Math.max(160, Math.min(550, defaultRadius * 0.85));
+            const h = Math.round(leg_h + pad * 2);
+            const cx = pad;
+            const cy = h - pad;
+            const px = cx + defaultRadius;
+
+            const svgStr = generateCompassSVG(defaultRadius, appState.universalColor);
+
+            fabric.Image.fromURL(svgStr, (img) => {
+                const posX = cvs.width / 2;
+                const posY = cvs.height / 2;
+                img.set({
+                    left: posX,
+                    top: posY,
+                    originX: 'center',
+                    originY: 'center',
+                    isUIElement: true,
+                    isCompass: true,
+                    radius: defaultRadius,
+                    localCx: cx - w / 2,
+                    localCy: cy - h / 2,
+                    localPx: px - w / 2,
+                    localPy: cy - h / 2,
+                    hasRotatingPoint: true
+                });
+
+                cvs.add(img);
+                cvs.setActiveObject(img);
+                cvs.requestRenderAll();
+
+                appState.tool = 'select';
+                document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                document.querySelector('[data-tool="select"]')?.classList.add('active');
+                applyToolToAll();
+
+                checkActiveCompassHUD();
+                showToast("Compass ready! Drag to move needle, or use HUD controls to draw.");
+            });
+        }
+
+        function updateCompassHUD(comp) {
+            if (!comp) return;
+            const r_cm = comp.radius / PX_PER_CM;
+            const r_mm = r_cm * 10;
+            const infoEl = document.getElementById('hud-compass-info');
+            const sliderEl = document.getElementById('compass-radius-slider');
+            const numEl = document.getElementById('compass-radius-num');
+            
+            if (infoEl) infoEl.innerText = `${r_cm.toFixed(2)} cm (${r_mm.toFixed(0)} mm)`;
+            if (sliderEl) sliderEl.value = r_cm.toFixed(1);
+            if (numEl) numEl.value = r_cm.toFixed(2);
+        }
+
+        function setCompassRadius(comp, newRadiusPx) {
+            if (!comp || !comp.canvas) return;
+            newRadiusPx = Math.max(20, Math.min(3000, newRadiusPx));
+            const cvs = comp.canvas;
+
+            // Preserve current fixed needle position on canvas
+            const m = comp.calcTransformMatrix();
+            const needlePoint = fabric.util.transformPoint({ x: comp.localCx, y: comp.localCy }, m);
+
+            const pad = 55;
+            const newW = Math.round(newRadiusPx + pad * 2);
+            const leg_h = Math.max(160, Math.min(550, newRadiusPx * 0.85));
+            const newH = Math.round(leg_h + pad * 2);
+            const newCx = pad;
+            const newCy = newH - pad;
+            const newPx = newCx + newRadiusPx;
+
+            const newLocalCx = newCx - newW / 2;
+            const newLocalCy = newCy - newH / 2;
+            const newLocalPx = newPx - newW / 2;
+            const newLocalPy = newCy - newH / 2;
+
+            const angleRad = (comp.angle * Math.PI) / 180;
+            const cosA = Math.cos(angleRad);
+            const sinA = Math.sin(angleRad);
+
+            const newLeft = needlePoint.x - (newLocalCx * cosA - newLocalCy * sinA);
+            const newTop = needlePoint.y - (newLocalCx * sinA + newLocalCy * cosA);
+
+            comp.set({
+                left: newLeft,
+                top: newTop,
+                width: newW,
+                height: newH,
+                scaleX: 1,
+                scaleY: 1,
+                radius: newRadiusPx,
+                localCx: newLocalCx,
+                localCy: newLocalCy,
+                localPx: newLocalPx,
+                localPy: newLocalPy
+            });
+
+            const newSvg = generateCompassSVG(newRadiusPx, appState.universalColor);
+            comp.setSrc(newSvg, () => {
+                cvs.requestRenderAll();
+                updateCompassHUD(comp);
+            });
+        }
+
+        function rotateCompassAroundNeedle(comp, deltaDeg) {
+            if (!comp || !comp.canvas) return;
+            const cvs = comp.canvas;
+            const m = comp.calcTransformMatrix();
+            const needlePoint = fabric.util.transformPoint({ x: comp.localCx, y: comp.localCy }, m);
+
+            const newAngle = (comp.angle + deltaDeg) % 360;
+            const angleRad = (newAngle * Math.PI) / 180;
+            const cosA = Math.cos(angleRad);
+            const sinA = Math.sin(angleRad);
+
+            const newLeft = needlePoint.x - (comp.localCx * cosA - comp.localCy * sinA);
+            const newTop = needlePoint.y - (comp.localCx * sinA + comp.localCy * cosA);
+
+            comp.set({
+                angle: newAngle,
+                left: newLeft,
+                top: newTop
+            });
+            comp.setCoords();
+            cvs.requestRenderAll();
+        }
+
+        function drawCompassCircle(comp) {
+            if (!comp || !comp.canvas) return;
+            const cvs = comp.canvas;
+            const m = comp.calcTransformMatrix();
+            const needlePoint = fabric.util.transformPoint({ x: comp.localCx, y: comp.localCy }, m);
+            const pencilPoint = fabric.util.transformPoint({ x: comp.localPx, y: comp.localPy }, m);
+            const r = Math.hypot(pencilPoint.x - needlePoint.x, pencilPoint.y - needlePoint.y);
+
+            const circle = new fabric.Circle({
+                left: needlePoint.x,
+                top: needlePoint.y,
+                radius: r,
+                originX: 'center',
+                originY: 'center',
+                fill: 'transparent',
+                stroke: appState.universalColor,
+                strokeWidth: appState.universalThickness,
+                isUIElement: false
+            });
+
+            cvs.add(circle);
+            cvs.requestRenderAll();
+            updateHistory(cvs);
+            showToast(`Drew Circle of radius ${(r / PX_PER_CM).toFixed(2)} cm!`);
+        }
+
+        function drawCompassArc(comp, spanDeg = 90) {
+            if (!comp || !comp.canvas) return;
+            const cvs = comp.canvas;
+            const m = comp.calcTransformMatrix();
+            const needlePoint = fabric.util.transformPoint({ x: comp.localCx, y: comp.localCy }, m);
+            const pencilPoint = fabric.util.transformPoint({ x: comp.localPx, y: comp.localPy }, m);
+            const r = Math.hypot(pencilPoint.x - needlePoint.x, pencilPoint.y - needlePoint.y);
+
+            const startAngle = Math.atan2(pencilPoint.y - needlePoint.y, pencilPoint.x - needlePoint.x);
+            const spanRad = (spanDeg * Math.PI) / 180;
+            const endAngle = startAngle + spanRad;
+
+            const x1 = needlePoint.x + r * Math.cos(startAngle);
+            const y1 = needlePoint.y + r * Math.sin(startAngle);
+            const x2 = needlePoint.x + r * Math.cos(endAngle);
+            const y2 = needlePoint.y + r * Math.sin(endAngle);
+            const largeArc = Math.abs(spanRad) > Math.PI ? 1 : 0;
+            const sweep = spanRad > 0 ? 1 : 0;
+
+            const pathStr = `M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} ${sweep} ${x2} ${y2}`;
+            const arcPath = new fabric.Path(pathStr, {
+                fill: 'transparent',
+                stroke: appState.universalColor,
+                strokeWidth: appState.universalThickness,
+                isUIElement: false
+            });
+
+            cvs.add(arcPath);
+            cvs.requestRenderAll();
+            updateHistory(cvs);
+            showToast(`Drew ${spanDeg}° Arc of radius ${(r / PX_PER_CM).toFixed(2)} cm!`);
+        }
+
+        function removeCompass(comp) {
+            if (!comp || !comp.canvas) return;
+            const cvs = comp.canvas;
+            cvs.remove(comp);
+            cvs.requestRenderAll();
+            checkActiveCompassHUD();
+            showToast("Compass removed.");
+        }
+
+        // --- Flowchart & Process Tree Engine ---
+        let flowchartConfig = {
+            direction: 'horizontal',
+            type: 'process',
+            theme: 'blue',
+            stepsCount: 3
+        };
+
+        function getFlowchartThemeColors(theme) {
+            const isDark = (appState.theme === 'black');
+            if (theme === 'blue') {
+                return isDark ? { stroke: '#60a5fa', fill: '#1e3a8a', text: '#ffffff' } : { stroke: '#2563eb', fill: '#dbeafe', text: '#1e3a8a' };
+            } else if (theme === 'green') {
+                return isDark ? { stroke: '#34d399', fill: '#064e3b', text: '#ffffff' } : { stroke: '#059669', fill: '#d1fae5', text: '#064e3b' };
+            } else if (theme === 'purple') {
+                return isDark ? { stroke: '#c084fc', fill: '#4c1d95', text: '#ffffff' } : { stroke: '#7c3aed', fill: '#ede9fe', text: '#4c1d95' };
+            } else if (theme === 'orange') {
+                return isDark ? { stroke: '#fb923c', fill: '#7c2d12', text: '#ffffff' } : { stroke: '#ea580c', fill: '#ffedd5', text: '#7c2d12' };
+            } else if (theme === 'slate') {
+                return isDark ? { stroke: '#94a3b8', fill: '#334155', text: '#f8fafc' } : { stroke: '#475569', fill: '#f1f5f9', text: '#0f172a' };
+            } else {
+                return isDark ? { stroke: appState.universalColor, fill: 'rgba(30, 41, 59, 0.85)', text: '#ffffff' } : { stroke: appState.universalColor, fill: '#f8fafc', text: '#0f172a' };
+            }
+        }
+
+        function createFlowchartNode(x, y, text = 'Step', theme = 'blue') {
+            const colors = getFlowchartThemeColors(theme);
+            const rect = new fabric.Rect({
+                width: 145,
+                height: 60,
+                rx: 12,
+                ry: 12,
+                fill: colors.fill,
+                stroke: colors.stroke,
+                strokeWidth: 2.5,
+                originX: 'center',
+                originY: 'center',
+                shadow: new fabric.Shadow({ color: 'rgba(0,0,0,0.25)', blur: 6, offsetX: 2, offsetY: 3 })
+            });
+            const txt = new fabric.Text(text, {
+                fontSize: 15,
+                fontFamily: 'Arial',
+                fontWeight: 'bold',
+                fill: colors.text,
+                originX: 'center',
+                originY: 'center',
+                textAlign: 'center'
+            });
+            const group = new fabric.Group([rect, txt], {
+                left: x,
+                top: y,
+                originX: 'center',
+                originY: 'center',
+                isFlowchartNode: true,
+                nodeText: text,
+                nodeTheme: theme,
+                isUIElement: false
+            });
+            return group;
+        }
+
+        function createFlowchartArrow(x1, y1, x2, y2, color = '#3b82f6') {
+            const angle = Math.atan2(y2 - y1, x2 - x1);
+            const line = new fabric.Line([x1, y1, x2 - Math.cos(angle)*7, y2 - Math.sin(angle)*7], {
+                stroke: color,
+                strokeWidth: 2.5,
+                selectable: true,
+                isUIElement: false,
+                isFlowchartArrow: true
+            });
+            const head = new fabric.Triangle({
+                left: x2,
+                top: y2,
+                originX: 'center',
+                originY: 'center',
+                angle: (angle * 180 / Math.PI) + 90,
+                width: 14,
+                height: 14,
+                fill: color,
+                selectable: true,
+                isUIElement: false,
+                isFlowchartArrow: true
+            });
+            return new fabric.Group([line, head], {
+                selectable: true,
+                isUIElement: false,
+                isFlowchartArrow: true
+            });
+        }
+
+        function getActiveFlowchartNode() {
+            if (!appState.activeCanvas) return null;
+            const active = appState.activeCanvas.getActiveObject();
+            if (active && active.isFlowchartNode) return active;
+            return appState.activeCanvas.getObjects().reverse().find(o => o.isFlowchartNode) || null;
+        }
+
+        function checkActiveFlowchartHUD() {
+            const hud = document.getElementById('flowchart-hud');
+            if (!hud) return;
+            const node = getActiveFlowchartNode();
+            if (node) {
+                hud.classList.add('active');
+                const info = document.getElementById('hud-flowchart-info');
+                if (info) info.innerText = `Selected: ${node.nodeText || 'Node'}`;
+            } else {
+                hud.classList.remove('active');
+            }
+        }
+
+        function insertFlowchartOnCanvas() {
+            if (!appState.activeCanvas) appState.activeCanvas = appState.canvases[0].canvas;
+            const cvs = appState.activeCanvas;
+            document.querySelectorAll('.overlay').forEach(m => m.classList.remove('active'));
+
+            const { direction, type, theme, stepsCount } = flowchartConfig;
+            const colors = getFlowchartThemeColors(theme);
+            const startX = cvs.width / 2;
+            const startY = cvs.height / 2;
+
+            if (type === 'process') {
+                const isHoriz = (direction === 'horizontal');
+                const stepGap = isHoriz ? 210 : 120;
+                const totalSpan = (stepsCount - 1) * stepGap;
+                const originPos = isHoriz ? (startX - totalSpan / 2) : (startY - totalSpan / 2);
+
+                const defaultLabels = ['Start', 'Process', 'Review', 'Action', 'Output', 'Decision', 'Analyze', 'Finish'];
+
+                for (let i = 0; i < stepsCount; i++) {
+                    const posX = isHoriz ? (originPos + i * stepGap) : startX;
+                    const posY = isHoriz ? startY : (originPos + i * stepGap);
+                    const label = defaultLabels[i] || `Step ${i + 1}`;
+                    const node = createFlowchartNode(posX, posY, label, theme);
+                    cvs.add(node);
+
+                    if (i > 0) {
+                        const prevX = isHoriz ? (originPos + (i - 1) * stepGap) : startX;
+                        const prevY = isHoriz ? startY : (originPos + (i - 1) * stepGap);
+                        const ax1 = isHoriz ? prevX + 75 : prevX;
+                        const ay1 = isHoriz ? prevY : prevY + 33;
+                        const ax2 = isHoriz ? posX - 75 : posX;
+                        const ay2 = isHoriz ? posY : posY - 33;
+                        const arrow = createFlowchartArrow(ax1, ay1, ax2, ay2, colors.stroke);
+                        cvs.add(arrow);
+                    }
+                }
+            } else if (type === 'tree') {
+                // Root -> 2 Subordinates -> 4 Leaves
+                const rootY = startY - 140;
+                const root = createFlowchartNode(startX, rootY, 'Root Process', theme);
+                cvs.add(root);
+
+                const subY = startY;
+                const subLeft = createFlowchartNode(startX - 180, subY, 'Branch A', theme);
+                const subRight = createFlowchartNode(startX + 180, subY, 'Branch B', theme);
+                cvs.add(subLeft);
+                cvs.add(subRight);
+
+                cvs.add(createFlowchartArrow(startX, rootY + 33, startX - 180, subY - 33, colors.stroke));
+                cvs.add(createFlowchartArrow(startX, rootY + 33, startX + 180, subY - 33, colors.stroke));
+
+                const leafY = startY + 140;
+                const leaves = [
+                    { x: startX - 270, label: 'Leaf 1', parentX: startX - 180 },
+                    { x: startX - 90, label: 'Leaf 2', parentX: startX - 180 },
+                    { x: startX + 90, label: 'Leaf 3', parentX: startX + 180 },
+                    { x: startX + 270, label: 'Leaf 4', parentX: startX + 180 }
+                ];
+                leaves.forEach(l => {
+                    const leaf = createFlowchartNode(l.x, leafY, l.label, theme);
+                    cvs.add(leaf);
+                    cvs.add(createFlowchartArrow(l.parentX, subY + 33, l.x, leafY - 33, colors.stroke));
+                });
+            } else {
+                // Single start node
+                const node = createFlowchartNode(startX, startY, 'Main Process', theme);
+                cvs.add(node);
+                cvs.setActiveObject(node);
+            }
+
+            cvs.requestRenderAll();
+            updateHistory(cvs);
+
+            appState.tool = 'select';
+            document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+            document.querySelector('[data-tool="select"]')?.classList.add('active');
+            applyToolToAll();
+
+            checkActiveFlowchartHUD();
+            showToast("Flowchart inserted! Double-tap any block to edit text, or pull handles to extend.");
+        }
+
+        function addConnectedFlowchartNode(baseNode) {
+            if (!baseNode || !baseNode.canvas) return;
+            const cvs = baseNode.canvas;
+            const isHoriz = (flowchartConfig.direction === 'horizontal');
+            const theme = baseNode.nodeTheme || flowchartConfig.theme;
+            const colors = getFlowchartThemeColors(theme);
+
+            const newX = isHoriz ? baseNode.left + 210 : baseNode.left;
+            const newY = isHoriz ? baseNode.top : baseNode.top + 120;
+
+            const nodeCount = cvs.getObjects().filter(o => o.isFlowchartNode).length + 1;
+            const newNode = createFlowchartNode(newX, newY, `Step ${nodeCount}`, theme);
+            cvs.add(newNode);
+
+            const ax1 = isHoriz ? baseNode.left + 75 : baseNode.left;
+            const ay1 = isHoriz ? baseNode.top : baseNode.top + 33;
+            const ax2 = isHoriz ? newX - 75 : newX;
+            const ay2 = isHoriz ? newY : newY - 33;
+            const arrow = createFlowchartArrow(ax1, ay1, ax2, ay2, colors.stroke);
+            cvs.add(arrow);
+
+            cvs.setActiveObject(newNode);
+            cvs.requestRenderAll();
+            updateHistory(cvs);
+            checkActiveFlowchartHUD();
+        }
+
+        function addLeafBranchNode(baseNode) {
+            if (!baseNode || !baseNode.canvas) return;
+            const cvs = baseNode.canvas;
+            const theme = baseNode.nodeTheme || flowchartConfig.theme;
+            const colors = getFlowchartThemeColors(theme);
+
+            // Subordinate node offset
+            const newX = baseNode.left + 150;
+            const newY = baseNode.top + 110;
+
+            const leafNode = createFlowchartNode(newX, newY, 'Subordinate', theme);
+            cvs.add(leafNode);
+
+            const arrow = createFlowchartArrow(baseNode.left, baseNode.top + 33, newX, newY - 33, colors.stroke);
+            cvs.add(arrow);
+
+            cvs.setActiveObject(leafNode);
+            cvs.requestRenderAll();
+            updateHistory(cvs);
+            checkActiveFlowchartHUD();
+        }
+
+        function deleteFlowchartNode(node) {
+            if (!node || !node.canvas) return;
+            const cvs = node.canvas;
+            cvs.remove(node);
+            cvs.requestRenderAll();
+            updateHistory(cvs);
+            checkActiveFlowchartHUD();
+        }
+
+        let activeEditingNode = null;
+        function editFlowchartNodeText(node) {
+            if (!node || !node.canvas) return;
+            activeEditingNode = node;
+            const current = node.nodeText || (node.item && node.item(1) ? node.item(1).text : 'Step');
+            const input = document.getElementById('fc-node-text-input');
+            if (input) {
+                input.value = current;
+                document.getElementById('modal-fc-text').classList.add('active');
+                setTimeout(() => { input.focus(); input.select(); }, 100);
+            }
+        }
+
+        function changeFlowchartNodeTheme(node, newTheme) {
+            if (!node || !node.canvas) return;
+            const colors = getFlowchartThemeColors(newTheme);
+            node.nodeTheme = newTheme;
+            if (node.item && node.item(0)) {
+                node.item(0).set({ fill: colors.fill, stroke: colors.stroke });
+            }
+            if (node.item && node.item(1)) {
+                node.item(1).set({ fill: colors.text });
+            }
+            node.canvas.requestRenderAll();
+            updateHistory(node.canvas);
+            showToast(`Theme updated to ${newTheme.toUpperCase()}`);
+        }
+
+        // --- File IO ---
+        function showLoading(text) { document.getElementById('loading-text').innerText = text; document.getElementById('modal-loading').classList.add('active'); }
+        function hideLoading() { document.getElementById('modal-loading').classList.remove('active'); }
+
+        function getFileName(ext) {
+            const d = new Date();
+            const dd = String(d.getDate()).padStart(2,'0');
+            const mm = String(d.getMonth()+1).padStart(2,'0');
+            const yyyy = d.getFullYear();
+            return `KryloCanvas (Web-WhiteBoard)_${dd}.${mm}.${yyyy}.${ext}`;
+        }
+
+        function handleImageImport(e) {
+            const f = e.target.files[0]; if (!f) return;
+            const r = new FileReader(); 
+            r.onload = (ev) => {
+                fabric.Image.fromURL(ev.target.result, (img) => {
+                    if(!appState.activeCanvas) appState.activeCanvas = appState.canvases[0].canvas;
+                    const cvs = appState.activeCanvas;
+                    
+                    img.set({ left: cvs.width/2, top: cvs.height/2, originX: 'center', originY: 'center', cornerSize: 16, transparentCorners: false, isUIElement: false });
+                    img.setControlsVisibility({ mtr: true, mt: true, mb: true, ml: true, mr: true, tl: true, tr: true, bl: true, br: true }); 
+                    
+                    cvs.add(img); cvs.setActiveObject(img); cvs.requestRenderAll(); updateHistory(cvs);
+                    
+                    appState.tool = 'select';
+                    document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                    document.querySelector('[data-tool="select"]').classList.add('active');
+                    applyToolToAll();
+                });
+            };
+            r.readAsDataURL(f); e.target.value = null;
+        }
+
+        // =====================================================================
+        // LAZY PDF ENGINE
+        // The PDF stays open in pdf.js; each page is only rasterised when it is
+        // near the viewport, and it is released again when scrolled far away.
+        //  - at most PDF_LAZY.maxAwake pages hold a full-size canvas + decoded image
+        //  - rendered pages are kept as compressed JPEG blobs (LRU, max PDF_LAZY.maxCache)
+        //  - every page is rendered to fit the page canvas (never larger), so huge
+        //    or very high-resolution PDFs are scaled down automatically
+        // Drawings are untouched: they live as vector objects on every page.
+        // =====================================================================
+        const PDF_LAZY = (function () {
+            const dpr = window.devicePixelRatio || 1;
+            const lowMem = !!(navigator.deviceMemory && navigator.deviceMemory <= 4);
+            return {
+                maxAwake: 5,                                   // ~3 visible + 1 buffer each side
+                maxCache: lowMem ? 30 : 40,                    // compressed page bitmaps kept in RAM
+                quality: Math.min(lowMem ? 1.15 : 1.4, Math.max(1, dpr)),
+                maxPixels: lowMem ? 2.3e6 : 3.4e6,             // hard cap per rendered page
+                jpeg: 0.9,
+                pages: [], cache: new Map(), wanted: new Set(),
+                queue: Promise.resolve(), timer: null
+            };
+        })();
+
+        function pdfCollapseBackstore(cvs) {
+            [cvs.lowerCanvasEl, cvs.upperCanvasEl, cvs.cacheCanvasEl].forEach(el => { if (el) { el.width = 1; el.height = 1; } });
+        }
+        function pdfRestoreBackstore(cvs) {
+            cvs.setDimensions({ width: cvs.width, height: cvs.height });   // same call rotatePage uses
+        }
+
+        function pdfLazyRegister(pageRef, doc, num) {
+            pageRef.pdf = { doc: doc, num: num, state: 'asleep' };
+            PDF_LAZY.pages.push(pageRef);
+            pdfCollapseBackstore(pageRef.canvas);
+        }
+
+        function pdfLazyForget(pageId) {
+            const L = PDF_LAZY;
+            const e = L.cache.get(pageId);
+            if (e) { URL.revokeObjectURL(e.url); L.cache.delete(pageId); }
+            L.pages = L.pages.filter(p => p.id !== pageId);
+        }
+
+        async function pdfRenderBlob(p) {
+            const L = PDF_LAZY, src = p.pdf;
+            const page = await src.doc.getPage(src.num);
+            const base = page.getViewport({ scale: 1 });
+            const odd = (p.rot || 0) % 2 === 1;
+            const boxW = odd ? p.canvas.height : p.canvas.width, boxH = odd ? p.canvas.width : p.canvas.height;
+            const fit = Math.min(boxW / base.width, boxH / base.height);
+            let scale = fit * L.quality;
+            const px = (base.width * scale) * (base.height * scale);
+            if (px > L.maxPixels) scale *= Math.sqrt(L.maxPixels / px);
+            const vp = page.getViewport({ scale: scale });
+            const tc = document.createElement('canvas');
+            tc.width = Math.max(1, Math.ceil(vp.width)); tc.height = Math.max(1, Math.ceil(vp.height));
+            const ctx = tc.getContext('2d', { alpha: false });
+            ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, tc.width, tc.height);
+            await page.render({ canvasContext: ctx, viewport: vp, background: '#ffffff' }).promise;
+            const blob = await new Promise(res => tc.toBlob(res, 'image/jpeg', L.jpeg));
+            tc.width = 0; tc.height = 0;          // free the temporary bitmap immediately
+            page.cleanup();
+            return blob;
+        }
+
+        // Make a PDF page fully visible: big canvas back, bitmap rendered/cached, background applied
+        async function pdfRealize(p) {
+            const L = PDF_LAZY;
+            pdfRestoreBackstore(p.canvas);
+            let entry = L.cache.get(p.id);
+            if (!entry || entry.rot !== (p.rot || 0)) {
+                if (entry) URL.revokeObjectURL(entry.url);
+                const blob = await pdfRenderBlob(p);
+                entry = { url: URL.createObjectURL(blob), rot: (p.rot || 0) };
+            }
+            L.cache.delete(p.id); L.cache.set(p.id, entry);      // mark as most recently used
+            p.bgImage = entry.url;
+            await new Promise(res => renderBackground(p, res));
+            p.pdf.state = 'awake';
+            pdfCacheTrim();
+        }
+
+        function pdfCacheTrim() {
+            const L = PDF_LAZY;
+            for (const [id, entry] of L.cache) {
+                if (L.cache.size <= L.maxCache) break;
+                const p = L.pages.find(x => x.id === id);
+                if (p && p.pdf.state !== 'asleep') continue;     // still on screen
+                URL.revokeObjectURL(entry.url); L.cache.delete(id);
+            }
+        }
+
+        function pdfWake(p) {
+            const L = PDF_LAZY;
+            if (p.pdf.state !== 'asleep') return;
+            p.pdf.state = 'loading';
+            L.queue = L.queue.then(async () => {
+                if (!L.wanted.has(p) || !appState.canvases.includes(p)) { p.pdf.state = 'asleep'; return; }
+                try { await pdfRealize(p); }
+                catch (err) { console.error('PDF page load error:', err); p.pdf.state = 'asleep'; }
+            });
+        }
+
+        function pdfSleep(p) {
+            if (!p.pdf || p.pdf.state !== 'awake') return;
+            p.bgImage = null;
+            p.canvas.setBackgroundImage(null, () => {});
+            pdfCollapseBackstore(p.canvas);
+            p.pdf.state = 'asleep';
+        }
+
+        // Decide which PDF pages should be loaded right now (nearest to the middle of the screen)
+        function pdfUpdateWindow() {
+            const L = PDF_LAZY;
+            L.pages = L.pages.filter(p => appState.canvases.includes(p));
+            if (!L.pages.length) return L.queue;
+            const r = document.getElementById('pages-container').getBoundingClientRect();
+            const cy = (r.top + r.bottom) / 2, margin = r.height * 0.5;
+            const cands = [];
+            L.pages.forEach(p => {
+                const w = document.getElementById('wrapper-' + p.id); if (!w) return;
+                const b = w.getBoundingClientRect();
+                if (b.bottom < r.top - margin || b.top > r.bottom + margin) return;
+                cands.push({ p: p, d: Math.abs((b.top + b.bottom) / 2 - cy) });
+            });
+            cands.sort((a, b) => a.d - b.d);
+            const wanted = new Set(cands.slice(0, L.maxAwake).map(c => c.p));
+            const act = appState.activeCanvas && getPageRef(appState.activeCanvas);
+            if (act && act.pdf) wanted.add(act);                  // the page being drawn on stays loaded
+            L.wanted = wanted;
+            L.pages.forEach(p => { if (!wanted.has(p)) pdfSleep(p); });
+            cands.forEach(c => { if (wanted.has(c.p)) pdfWake(c.p); });
+            return L.queue;
+        }
+
+        function pdfScheduleWindow() {
+            const L = PDF_LAZY;
+            if (L.timer || !L.pages.length) return;
+            L.timer = setTimeout(() => { L.timer = null; pdfUpdateWindow(); }, 120);
+        }
+        (function () {
+            const pc = document.getElementById('pages-container');
+            pc.addEventListener('scroll', pdfScheduleWindow, { passive: true });
+            ['wheel', 'touchend', 'pointerup'].forEach(ev => pc.addEventListener(ev, pdfScheduleWindow, { passive: true }));
+            window.addEventListener('resize', pdfScheduleWindow);
+        })();
+
+        async function handlePDFImport(e) {
+            const f = e.target.files[0]; if (!f) return;
+            showLoading("Importing PDF...");
+            try {
+                const buf = await f.arrayBuffer(); 
+                const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+                const total = pdf.numPages, created = [];
+                for (let i = 1; i <= total; i++) {
+                    // cheap empty page shell; the real bitmap is rendered lazily when the page is near the screen
+                    const p = addPage('standard', null, 'green', true);
+                    pdfLazyRegister(p, pdf, i);
+                    created.push(p);
+                    if (i % 5 === 0) { showLoading("Preparing pages " + i + " / " + total + "..."); await new Promise(r => setTimeout(r, 16)); }
+                }
+                updateDeleteButtons();
+                updateAllPageHeaders();
+                appState.activeCanvas = created[0].canvas;
+                updateSelectedPageHighlight();
+                document.getElementById('wrapper-' + created[0].id)?.scrollIntoView({ block: 'center' });
+                showLoading("Loading first pages...");
+                await pdfUpdateWindow();
+            } catch(err) { console.error("PDF Import Error:", err); showToast("Failed to import PDF."); } finally { hideLoading(); e.target.value = null; }
+        }
+
+        function exportPDF() {
+            showLoading("Generating PDF...");
+            setTimeout(async () => {
+                try {
+                    const { jsPDF } = window.jspdf; 
+                    let doc = null;
+                    await PDF_LAZY.queue;                      // let any page that is loading finish first
+                    const pages = appState.canvases.slice();
+                    
+                    for (let i = 0; i < pages.length; i++) {
+                        const p = pages[i];
+                        const w = p.canvas.width; 
+                        const h = p.canvas.height;
+                        const orient = w > h ? 'l' : 'p';
+
+                        // PDF pages that are currently unloaded are loaded one at a time, then released again
+                        const temp = !!(p.pdf && p.pdf.state !== 'awake');
+                        if (temp) { showLoading("Generating PDF... " + (i + 1) + " / " + pages.length); await pdfRealize(p); }
+                        
+                        if (i === 0) {
+                            doc = new jsPDF({ orientation: orient, unit: 'px', format: [w, h] }); 
+                        } else {
+                            doc.addPage([w, h], orient);
+                        }
+                        
+                        // Hide UI elements (rulers, etc.) before taking snapshot
+                        const hidden = []; 
+                        p.canvas.getObjects().forEach(o => { if(o.isUIElement) { hidden.push(o); o.set('opacity', 0); } }); 
+                        p.canvas.renderAll();
+                        
+                        // Add canvas image to PDF page
+                        const imgData = p.canvas.toDataURL({format: 'jpeg', quality: 0.95});
+                        doc.addImage(imgData, 'JPEG', 0, 0, w, h);
+                        
+                        // Restore UI elements
+                        hidden.forEach(o => o.set('opacity', 1)); 
+                        p.canvas.renderAll();
+
+                        if (temp) { pdfSleep(p); await new Promise(r => setTimeout(r, 0)); }
+                    }
+                    
+                    if(doc) {
+                        doc.save(getFileName('pdf'));
+                        showToast("PDF Exported Successfully!");
+                    }
+                } catch(e) { 
+                    console.error("PDF Export Error:", e); 
+                    showToast("Error exporting PDF. Check console."); 
+                } finally { 
+                    hideLoading(); 
+                    pdfScheduleWindow();
+                }
+            }, 100);
+        }
+
+        // =====================================================================
+        // V2 ADDITIONS: Plain Text tool + Preview (zoom/pan) tool
+        // =====================================================================
+
+        // --- Plain text tool ---
+        function setupTextEvents(canvas) {
+            let wasEditing = false;
+            let pendingPt = null;
+
+            canvas.on('mouse:down:before', () => {
+                const a = canvas.getActiveObject();
+                wasEditing = !!(a && a.isEditing);
+            });
+
+            canvas.on('mouse:down', (opt) => {
+                pendingPt = null;
+                if (appState.tool !== 'text') return;
+                if (opt.target || wasEditing) return;   // clicking existing object / just closing an edit
+                pendingPt = canvas.getPointer(opt.e);
+            });
+
+            canvas.on('mouse:up', (opt) => {
+                if (appState.tool !== 'text') { pendingPt = null; return; }
+                if (pendingPt && opt.isClick !== false) {
+                    const pt = pendingPt; pendingPt = null;
+                    const t = new fabric.IText('', {
+                        left: pt.x, top: pt.y,
+                        fontFamily: 'Arial', fontSize: 40,
+                        fill: appState.universalColor,
+                        isUIElement: false
+                    });
+                    canvas.add(t);
+                    canvas.setActiveObject(t);
+                    t.enterEditing();
+                    canvas.requestRenderAll();
+                    return;
+                }
+                pendingPt = null;
+                const tg = opt.target;
+                if (tg && tg.type === 'i-text' && !tg.isEditing && opt.isClick !== false) {
+                    canvas.setActiveObject(tg);
+                    tg.enterEditing(opt.e);
+                    canvas.requestRenderAll();
+                }
+            });
+
+            // Empty text boxes are discarded when editing ends
+            canvas.on('text:editing:exited', (e) => {
+                const t = e.target;
+                if (t && (!t.text || !t.text.trim())) { canvas.remove(t); canvas.requestRenderAll(); }
+            });
+        }
+
+        // --- Preview tool: pinch zoom + pan inside whiteboard pages ---
+        let previewZoom = 1;
+        const PREVIEW_MIN = 0.5, PREVIEW_MAX = 4;
+
+        function updatePreviewMode() {
+            document.body.classList.toggle('preview-mode', appState.tool === 'preview');
+            if (appState.tool !== 'preview') document.body.classList.remove('is-panning');
+        }
+
+        (function setupPreviewZoom() {
+            const pc = document.getElementById('pages-container');
+
+            function resetWrapper(w) {
+                w.style.width = ''; w.style.maxWidth = '';
+                w.style.marginLeft = ''; w.style.marginRight = '';
+                w._base = undefined;
+            }
+            function ensureBase(w) {
+                if (w._base) return w._base;
+                const sw = w.style.width, sm = w.style.maxWidth;
+                w.style.width = ''; w.style.maxWidth = '';
+                w._base = w.getBoundingClientRect().width;
+                w.style.width = sw; w.style.maxWidth = sm;
+                return w._base;
+            }
+            function zoomWrapper(w) {
+                if (previewZoom === 1) { resetWrapper(w); return; }
+                const base = ensureBase(w);
+                w.style.width = (base * previewZoom) + 'px';
+                w.style.maxWidth = 'none';
+                w.style.marginLeft = 'auto'; w.style.marginRight = 'auto';
+            }
+            function applyPreviewZoom(z) {
+                z = Math.max(PREVIEW_MIN, Math.min(PREVIEW_MAX, z));
+                if (Math.abs(z - 1) < 0.04) z = 1;      // snap back to 100%
+                previewZoom = z;
+                pc.style.alignItems = z === 1 ? '' : 'flex-start';   // keeps zoomed pages fully scrollable
+                pc.querySelectorAll('.canvas-wrapper').forEach(zoomWrapper);
+            }
+            // zoom while keeping the content point (fx,fy) under screen point (px,py) of the container
+            function zoomAnchored(z, fx, fy, px, py) {
+                applyPreviewZoom(z);
+                pc.scrollLeft = fx * pc.scrollWidth - px;
+                pc.scrollTop = fy * pc.scrollHeight - py;
+            }
+            function anchorAt(clientX, clientY) {
+                const r = pc.getBoundingClientRect();
+                const px = clientX - r.left, py = clientY - r.top;
+                return { px, py, fx: (pc.scrollLeft + px) / pc.scrollWidth, fy: (pc.scrollTop + py) / pc.scrollHeight };
+            }
+
+            // New pages added while zoomed follow the current zoom level
+            new MutationObserver(muts => {
+                if (previewZoom === 1) return;
+                muts.forEach(m => m.addedNodes.forEach(n => {
+                    if (n.nodeType === 1 && n.classList.contains('canvas-wrapper')) zoomWrapper(n);
+                }));
+            }).observe(pc, { childList: true });
+
+            window.addEventListener('resize', () => {
+                if (previewZoom === 1) return;
+                pc.querySelectorAll('.canvas-wrapper').forEach(resetWrapper);
+                applyPreviewZoom(previewZoom);
+            });
+
+            // ---- Touch: two-finger pinch zoom (+ two-finger move), one-finger pan ----
+            let pinch = null, pan = null;
+            const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+            const mid = t => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+
+            function startPinch(touches) {
+                const m = mid(touches), a = anchorAt(m.x, m.y);
+                pinch = { d0: dist(touches), z0: previewZoom, fx: a.fx, fy: a.fy };
+                pan = null;
+            }
+            function startPan(t) {
+                pan = { x: t.clientX, y: t.clientY, sl: pc.scrollLeft, st: pc.scrollTop };
+                pinch = null;
+            }
+
+            pc.addEventListener('touchstart', (e) => {
+                if (appState.tool !== 'preview') return;
+                if (e.touches.length >= 2) startPinch(e.touches);
+                else if (e.touches.length === 1) startPan(e.touches[0]);
+            }, { passive: true });
+
+            pc.addEventListener('touchmove', (e) => {
+                if (appState.tool !== 'preview') return;
+                if (e.cancelable) e.preventDefault();
+                if (pinch && e.touches.length >= 2) {
+                    const m = mid(e.touches), r = pc.getBoundingClientRect();
+                    zoomAnchored(pinch.z0 * dist(e.touches) / pinch.d0, pinch.fx, pinch.fy, m.x - r.left, m.y - r.top);
+                } else if (pan && e.touches.length === 1) {
+                    const t = e.touches[0];
+                    pc.scrollLeft = pan.sl - (t.clientX - pan.x);
+                    pc.scrollTop = pan.st - (t.clientY - pan.y);
+                }
+            }, { passive: false });
+
+            const endTouch = (e) => {
+                if (appState.tool !== 'preview') { pinch = pan = null; return; }
+                if (e.touches.length >= 2) startPinch(e.touches);
+                else if (e.touches.length === 1) startPan(e.touches[0]);
+                else { pinch = pan = null; }
+            };
+            pc.addEventListener('touchend', endTouch, { passive: true });
+            pc.addEventListener('touchcancel', endTouch, { passive: true });
+
+            // ---- Mouse: drag to pan (Preview tool only) ----
+            let mousePan = null;
+            pc.addEventListener('pointerdown', (e) => {
+                if (appState.tool !== 'preview' || e.pointerType !== 'mouse' || e.button !== 0) return;
+                if (e.target.closest('button')) return;
+                mousePan = { x: e.clientX, y: e.clientY, sl: pc.scrollLeft, st: pc.scrollTop };
+                document.body.classList.add('is-panning');
+            });
+            window.addEventListener('pointermove', (e) => {
+                if (!mousePan) return;
+                pc.scrollLeft = mousePan.sl - (e.clientX - mousePan.x);
+                pc.scrollTop = mousePan.st - (e.clientY - mousePan.y);
+            });
+            const endMousePan = () => { mousePan = null; document.body.classList.remove('is-panning'); };
+            window.addEventListener('pointerup', endMousePan);
+            window.addEventListener('pointercancel', endMousePan);
+
+            // ---- Trackpad pinch / Ctrl+scroll (desktop) ----
+            // Browser zoom is always blocked over the whiteboard; in Preview it zooms the pages instead.
+            pc.addEventListener('wheel', (e) => {
+                if (!e.ctrlKey) return;
+                e.preventDefault();
+                if (appState.tool !== 'preview') return;
+                const dy = Math.max(-30, Math.min(30, e.deltaY));
+                const a = anchorAt(e.clientX, e.clientY);
+                zoomAnchored(previewZoom * Math.exp(-dy * 0.01), a.fx, a.fy, a.px, a.py);
+            }, { passive: false });
+
+            // ---- iOS Safari page-pinch gestures are blocked over the whiteboard only ----
+            ['gesturestart', 'gesturechange', 'gestureend'].forEach(ev =>
+                pc.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
+        })();
+    </script>
+</body>
+</html>
