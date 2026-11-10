@@ -40,7 +40,7 @@
 
 **KryloCanvas (Web-WhiteBoard)** is an all-in-one, modern web-based whiteboard and technical sketching application packaged inside a standalone, lightweight HTML file. It bridges the gap between casual digital whiteboards and high-precision computer-aided technical drafting suites. 
 
-Engineered for educators, students, engineers, architects, presenters, and project planners, KryloCanvas delivers an uncompromising suite of tools: mathematically solid geometry instruments with edge snapping, millimeter-accurate isometric and Cartesian graph papers, full-featured Microsoft Word-style interactive tables, automated process flowchart and mind map hierarchies, responsive multi-page document pagination, multi-format Office/PDF import capabilities, and lossless vector PDF export.
+Engineered for educators, students, engineers, architects, presenters, and project planners, KryloCanvas delivers an uncompromising suite of tools: mathematically solid geometry instruments with edge snapping, millimeter-accurate isometric and Cartesian graph papers, full-featured interactive tables, automated process flowchart and mind map hierarchies, responsive multi-page document pagination, multi-format Office/PDF import capabilities, and lossless vector PDF export.
 
 KryloCanvas requires **no server-side backend, no build steps, and no installation**. It runs directly inside modern web browsers across desktops, laptops, tablets, iPads, and mobile devices while actively conserving client-side memory through intelligent raster virtualization and adaptive device pixel ratios.
 
